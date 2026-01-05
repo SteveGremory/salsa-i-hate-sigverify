@@ -1,4 +1,6 @@
 use {
+    crate::scheduler_synchronization,
+    log::debug,
     solana_clock::{
         DEFAULT_TICKS_PER_SLOT, FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET,
         HOLD_TRANSACTIONS_SLOT_OFFSET,
@@ -7,7 +9,7 @@ use {
     solana_runtime::bank::Bank,
     solana_unified_scheduler_pool::{BankingStageMonitor, BankingStageStatus},
     std::sync::{
-        atomic::{AtomicBool, Ordering::Relaxed},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
@@ -69,6 +71,48 @@ impl DecisionMaker {
             BufferedPacketsDecision::Forward
         }
     }
+
+    /// Gate consume decisions based on scheduler synchronization.
+    ///
+    /// vanilla: consume if we are in fallback period with no external signal.
+    ///          there are no other preconditions
+    /// block: consume if we are in delegation period.
+    ///        preconditions: there is a bundle (for this slot) to consume
+    pub fn maybe_consume<const VANILLA: bool>(
+        decision: BufferedPacketsDecision,
+    ) -> BufferedPacketsDecision {
+        debug!("maybe_consume VANILLA {VANILLA:?} decision {decision:?}");
+        let BufferedPacketsDecision::Consume(bank) = decision else {
+            return decision;
+        };
+
+        let current_tick_height = bank.tick_height();
+        let max_tick_height = bank.max_tick_height();
+        let bank_ticks_per_slot = bank.ticks_per_slot();
+        let start_tick = max_tick_height - bank_ticks_per_slot;
+        let ticks_into_slot = current_tick_height.saturating_sub(start_tick);
+        let delegation_period_length = bank_ticks_per_slot * 15 / 16;
+        let in_delegation_period = ticks_into_slot < delegation_period_length;
+
+        debug!("maybe_consume current_tick_height {current_tick_height} max_tick_height {max_tick_height} bank_ticks_per_slot {bank_ticks_per_slot} start_tick {start_tick} ticks_into_slot {ticks_into_slot} delegation_period_length {delegation_period_length} in_delegation_period {in_delegation_period}");
+
+        let current_slot = bank.slot();
+
+        // Call the appropriate scheduler function
+        // vanilla_should_schedule and block_should_schedule are now idempotent -
+        // multiple threads calling for the same slot will get consistent results
+        let should_schedule: fn(u64, bool) -> Option<bool> = if VANILLA {
+            scheduler_synchronization::vanilla_should_schedule
+        } else {
+            scheduler_synchronization::block_should_schedule
+        };
+
+        match should_schedule(current_slot, in_delegation_period) {
+            Some(true) => BufferedPacketsDecision::Consume(bank),
+            Some(false) => BufferedPacketsDecision::Hold,
+            None => BufferedPacketsDecision::Hold,
+        }
+    }
 }
 
 impl From<&PohRecorder> for DecisionMaker {
@@ -94,7 +138,7 @@ impl DecisionMakerWrapper {
 
 impl BankingStageMonitor for DecisionMakerWrapper {
     fn status(&mut self) -> BankingStageStatus {
-        if self.is_exited.load(Relaxed) {
+        if self.is_exited.load(Ordering::Relaxed) {
             BankingStageStatus::Exited
         } else if matches!(
             self.decision_maker.make_consume_or_forward_decision(),
@@ -106,6 +150,7 @@ impl BankingStageMonitor for DecisionMakerWrapper {
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {

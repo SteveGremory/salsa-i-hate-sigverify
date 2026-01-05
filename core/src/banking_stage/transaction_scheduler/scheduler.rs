@@ -5,6 +5,7 @@ use {
         scheduler_common::SchedulingCommon, scheduler_error::SchedulerError,
         transaction_state::TransactionState, transaction_state_container::StateContainer,
     },
+    solana_clock::Slot,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     std::num::Saturating,
 };
@@ -14,10 +15,13 @@ pub(crate) trait Scheduler<Tx: TransactionWithMeta> {
     /// Schedule transactions from `container`.
     /// pre-graph and pre-lock filters may be passed to be applied
     /// before specific actions internally.
+    /// `target_slot` is the slot being scheduled for - workers will validate
+    /// they are executing on the correct slot.
     fn schedule<S: StateContainer<Tx>>(
         &mut self,
         container: &mut S,
         budget: u64,
+        target_slot: Slot,
         pre_graph_filter: impl Fn(&[&Tx], &mut [bool]),
         pre_lock_filter: impl Fn(&TransactionState<Tx>) -> PreLockFilterAction,
     ) -> Result<SchedulingSummary, SchedulerError>;

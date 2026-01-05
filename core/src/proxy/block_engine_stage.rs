@@ -7,6 +7,7 @@
 use {
     crate::{
         banking_trace::BankingPacketSender,
+        block_stage::HarmonicBlock,
         packet_bundle::PacketBundle,
         proto_packet_to_packet,
         proxy::{
@@ -128,6 +129,8 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        // Channel that blocks get piped through.
+        block_tx: Sender<HarmonicBlock>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -147,6 +150,7 @@ impl BlockEngineStage {
                     exit,
                     block_builder_fee_info,
                     shredstream_receiver_address,
+                    block_tx,
                 ));
             })
             .unwrap();
@@ -173,6 +177,7 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        block_tx: Sender<HarmonicBlock>,
     ) {
         let mut error_count: u64 = 0;
 
@@ -197,6 +202,7 @@ impl BlockEngineStage {
                 &block_builder_fee_info,
                 &shredstream_receiver_address,
                 &local_block_engine_config,
+                &block_tx,
             )
             .await
             {
@@ -232,6 +238,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
+        block_tx: &Sender<HarmonicBlock>,
     ) -> crate::proxy::Result<()> {
         let endpoint = Self::get_endpoint(&local_block_engine_config.block_engine_url)?;
         if !local_block_engine_config.disable_block_engine_autoconfig {
@@ -251,6 +258,7 @@ impl BlockEngineStage {
                 exit,
                 block_builder_fee_info,
                 shredstream_receiver_address,
+                block_tx,
             )
             .await;
         }
@@ -283,6 +291,7 @@ impl BlockEngineStage {
             exit,
             block_builder_fee_info,
             &Self::CONNECTION_TIMEOUT,
+            block_tx,
         )
         .await
         .inspect(|_| {
@@ -307,6 +316,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
+        block_tx: &Sender<HarmonicBlock>,
     ) -> crate::proxy::Result<()> {
         let candidates = Self::get_ranked_endpoints(&endpoint).await?;
 
@@ -342,6 +352,7 @@ impl BlockEngineStage {
                 exit,
                 block_builder_fee_info,
                 &Self::CONNECTION_TIMEOUT,
+                block_tx,
             )
             .await
             {
@@ -460,6 +471,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
+        block_tx: &Sender<HarmonicBlock>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -521,6 +533,7 @@ impl BlockEngineStage {
             keypair,
             cluster_info,
             &backend_url,
+            block_tx,
         )
         .await
     }
@@ -703,6 +716,7 @@ impl BlockEngineStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
+        block_tx: &Sender<HarmonicBlock>,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
@@ -715,10 +729,19 @@ impl BlockEngineStage {
 
         let subscribe_bundles_stream = timeout(
             *connection_timeout,
-            client.subscribe_bundles(block_engine::SubscribeBundlesRequest {}),
+            client.subscribe_bundles2(block_engine::SubscribeBundlesRequest {}),
         )
         .await
-        .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))?
+        .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles2".to_string()))?
+        .map_err(|e| ProxyError::MethodError(e.to_string()))?
+        .into_inner();
+
+        let subscribe_blocks_stream = timeout(
+            *connection_timeout,
+            client.subscribe_blocks(block_engine::SubscribeBundlesRequest {}),
+        )
+        .await
+        .map_err(|_| ProxyError::MethodTimeout("subscribe_blocks".to_string()))?
         .map_err(|e| ProxyError::MethodError(e.to_string()))?
         .into_inner();
 
@@ -746,7 +769,11 @@ impl BlockEngineStage {
 
         Self::consume_bundle_and_packet_stream(
             client,
-            (subscribe_bundles_stream, subscribe_packets_stream),
+            (
+                subscribe_bundles_stream,
+                subscribe_packets_stream,
+                subscribe_blocks_stream,
+            ),
             bundle_tx,
             packet_tx,
             local_config,
@@ -761,6 +788,7 @@ impl BlockEngineStage {
             cluster_info,
             connection_timeout,
             block_engine_url,
+            &block_tx,
         )
         .await
     }
@@ -768,9 +796,10 @@ impl BlockEngineStage {
     #[allow(clippy::too_many_arguments)]
     async fn consume_bundle_and_packet_stream(
         mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
-        (mut bundle_stream, mut packet_stream): (
+        (mut bundle_stream, mut packet_stream, mut block_stream): (
             Streaming<block_engine::SubscribeBundlesResponse>,
             Streaming<block_engine::SubscribePacketsResponse>,
+            Streaming<block_engine::SubscribeBundlesResponse>,
         ),
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
@@ -786,6 +815,7 @@ impl BlockEngineStage {
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
         block_engine_url: &str,
+        block_tx: &Sender<HarmonicBlock>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -807,6 +837,9 @@ impl BlockEngineStage {
                 }
                 maybe_bundles = bundle_stream.message() => {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
+                }
+                maybe_blocks = block_stream.message() => {
+                    Self::handle_block_engine_maybe_blocks(maybe_blocks, block_tx, &mut block_engine_stats)?;
                 }
                 _ = metrics_and_auth_tick.tick() => {
                     block_engine_stats.report();
@@ -912,6 +945,39 @@ impl BlockEngineStage {
         bundle_sender
             .send(bundles)
             .map_err(|_| ProxyError::PacketForwardError)
+    }
+
+    fn handle_block_engine_maybe_blocks(
+        maybe_blocks_response: Result<Option<block_engine::SubscribeBundlesResponse>, Status>,
+        block_sender: &Sender<crate::block_stage::HarmonicBlock>,
+        _block_engine_stats: &mut BlockEngineStageStats,
+    ) -> crate::proxy::Result<()> {
+        let blocks_response = maybe_blocks_response?.ok_or(ProxyError::GrpcStreamDisconnected)?;
+        for bundle in blocks_response.bundles {
+            // Parse uuid as uint64 slot
+            let intended_slot = bundle.uuid.parse::<u64>().map_err(|e| {
+                ProxyError::MethodError(format!("failed to parse block uuid as slot: {e}"))
+            })?;
+
+            if let Some(bundle_data) = bundle.bundle {
+                let packet_batch = PacketBatch::from(
+                    bundle_data
+                        .packets
+                        .into_iter()
+                        .map(proto_packet_to_packet)
+                        .collect::<Vec<BytesPacket>>(),
+                );
+
+                // Tag transactions as block-sourced by creating BlockPacketBundle
+                let block_bundle =
+                    crate::block_stage::HarmonicBlock::new(packet_batch, intended_slot);
+
+                block_sender
+                    .send(block_bundle)
+                    .map_err(|_| ProxyError::PacketForwardError)?;
+            }
+        }
+        Ok(())
     }
 
     fn handle_block_engine_packets(

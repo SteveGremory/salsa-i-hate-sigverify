@@ -42,6 +42,9 @@ pub struct ConsumeWork<Tx> {
     pub ids: Vec<TransactionId>,
     pub transactions: Vec<Tx>,
     pub max_ages: Vec<MaxAge>,
+    /// Harmonic: the slot this work was scheduled for. Workers should NOT
+    /// execute if the working bank's slot doesn't match this target slot.
+    pub target_slot: Slot,
 }
 
 /// Message: [Worker -> Scheduler]

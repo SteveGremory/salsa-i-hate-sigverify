@@ -186,9 +186,10 @@ impl<'a, CB: TransactionProcessingCallback> AccountLoader<'a, CB> {
 
         // Jito added: let's use pre-execution accounts
         if let Some(overrides) = account_overrides {
-            for (pubkey, account) in overrides.accounts().iter() {
+            overrides.accounts().iter_sync(|pubkey, account| {
                 loaded_accounts.insert(*pubkey, account.clone());
-            }
+                true // continue iteration
+            });
         }
 
         Self {
@@ -1300,7 +1301,7 @@ mod tests {
     #[test]
     fn test_overrides() {
         agave_logger::setup();
-        let mut account_overrides = AccountOverrides::default();
+        let account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         let account = AccountSharedData::new(42, 0, &Pubkey::default());
         account_overrides.set_slot_history(Some(account));

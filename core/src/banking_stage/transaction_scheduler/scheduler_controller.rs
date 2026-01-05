@@ -130,6 +130,9 @@ where
             // bypass sanitization and buffering and immediately drop the packets.
             let (decision, decision_time_us) =
                 measure_us!(self.decision_maker.make_consume_or_forward_decision());
+            // cavey: gate non-vote transaction scheduling behind vanilla scheduler -
+            // only run after the delegation threshold if no block was received
+            let decision = DecisionMaker::maybe_consume::<true /* VANILLA */>(decision);
             self.timing_metrics.update(|timing_metrics| {
                 timing_metrics.decision_time_us += decision_time_us;
             });
@@ -214,6 +217,7 @@ where
                 let (scheduling_summary, schedule_time_us) = measure_us!(self.scheduler.schedule(
                     &mut self.container,
                     scheduling_budget,
+                    bank.slot(),
                     |txs, results| {
                         Self::pre_graph_filter(txs, results, bank, MAX_PROCESSING_AGE)
                     },
@@ -666,6 +670,7 @@ mod tests {
                     ids: vec![],
                     transactions: vec![],
                     max_ages: vec![],
+                    target_slot: 0,
                 },
                 retryable_indexes: vec![],
             })

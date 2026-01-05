@@ -48,7 +48,7 @@ use {
 };
 
 pub mod bundle_account_locker;
-mod bundle_consumer;
+pub mod bundle_consumer;
 mod bundle_packet_deserializer;
 mod bundle_storage;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
@@ -576,7 +576,12 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) {
-        match decision_maker.make_consume_or_forward_decision() {
+        let decision = decision_maker.make_consume_or_forward_decision();
+        // cavey: gate bundle scheduling behind vanilla scheduler - bundles only
+        // run after the delegation threshold if no block was received
+        let decision = DecisionMaker::maybe_consume::<true /* VANILLA */>(decision);
+
+        match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
             BufferedPacketsDecision::Consume(bank) => {
@@ -959,10 +964,13 @@ impl BundleStage {
 mod tests {
     use {
         super::*,
-        crate::tip_manager::{
-            tip_distribution::{JitoTipDistributionConfig, TipDistributionAccount},
-            tip_payment::JitoTipPaymentConfig,
-            TipDistributionAccountConfig, TipManagerConfig,
+        crate::{
+            scheduler_synchronization,
+            tip_manager::{
+                tip_distribution::{JitoTipDistributionConfig, TipDistributionAccount},
+                tip_payment::JitoTipPaymentConfig,
+                TipDistributionAccountConfig, TipManagerConfig,
+            },
         },
         crossbeam_channel::{bounded, unbounded},
         solana_cluster_type::ClusterType,
@@ -1044,6 +1052,9 @@ mod tests {
 
         let bank = Bank::new_from_parent(bank, &Pubkey::new_unique(), 1);
         bank_forks.write().unwrap().insert(bank);
+
+        // Force vanilla scheduling for this slot (simulates being past delegation period)
+        scheduler_synchronization::force_vanilla_claim(1);
 
         let bank = bank_forks.read().unwrap().working_bank();
         assert_eq!(bank.slot(), 1);
@@ -1275,6 +1286,9 @@ mod tests {
 
         let bank = Bank::new_from_parent(bank, &Pubkey::new_unique(), 1);
         bank_forks.write().unwrap().insert(bank);
+
+        // Force vanilla scheduling for this slot (simulates being past delegation period)
+        scheduler_synchronization::force_vanilla_claim(1);
 
         let bank = bank_forks.read().unwrap().working_bank();
         assert_eq!(bank.slot(), 1);
@@ -1523,6 +1537,9 @@ mod tests {
 
         let bank = Bank::new_from_parent(bank, &Pubkey::new_unique(), 1);
         bank_forks.write().unwrap().insert(bank);
+
+        // Force vanilla scheduling for this slot (simulates being past delegation period)
+        scheduler_synchronization::force_vanilla_claim(1);
 
         let bank = bank_forks.read().unwrap().working_bank();
         assert_eq!(bank.slot(), 1);

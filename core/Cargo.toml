@@ -86,6 +86,7 @@ rand_chacha = { workspace = true }
 rayon = { workspace = true }
 rolling-file = { workspace = true }
 rustls = { workspace = true }
+scc = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
 slab = { workspace = true }
@@ -258,6 +259,10 @@ harness = false
 
 [[bench]]
 name = "scheduler"
+harness = false
+
+[[bench]]
+name = "block_consumer"
 harness = false
 
 [lints]

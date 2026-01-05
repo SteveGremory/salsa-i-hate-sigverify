@@ -117,6 +117,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
         &mut self,
         container: &mut S,
         budget: u64,
+        target_slot: solana_clock::Slot,
         pre_graph_filter: impl Fn(&[&Tx], &mut [bool]),
         pre_lock_filter: impl Fn(&TransactionState<Tx>) -> PreLockFilterAction,
     ) -> Result<SchedulingSummary, SchedulerError> {
@@ -290,7 +291,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                         if self.common.batches.transactions()[thread_id].len()
                             >= self.config.target_transactions_per_batch
                         {
-                            num_sent += self.common.send_batch(thread_id)?;
+                            num_sent += self.common.send_batch(thread_id, target_slot)?;
                         }
 
                         // if the thread is at max_cu_per_thread, remove it from the schedulable threads
@@ -313,7 +314,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
             }
 
             // Send all non-empty batches
-            num_sent += self.common.send_batches()?;
+            num_sent += self.common.send_batches(target_slot)?;
 
             // Refresh window budget and do chunked pops
             window_budget += unblock_this_batch.len();
@@ -326,7 +327,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
         }
 
         // Send batches for any remaining transactions
-        num_sent += self.common.send_batches()?;
+        num_sent += self.common.send_batches(target_slot)?;
 
         // Push unschedulable ids back into the container
         container.push_ids_into_queue(unschedulable_ids.into_iter());
@@ -614,6 +615,7 @@ mod tests {
             scheduler.schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter
             ),
@@ -634,6 +636,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -656,6 +659,7 @@ mod tests {
             .schedule(
                 &mut container,
                 0, // zero budget. nothing should be scheduled
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -678,6 +682,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -701,6 +706,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -729,6 +735,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -776,6 +783,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -791,6 +799,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -810,6 +819,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -839,6 +849,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -899,6 +910,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )
@@ -916,6 +928,7 @@ mod tests {
             .schedule(
                 &mut container,
                 u64::MAX, // no budget
+                0, // target_slot - test doesn't care about slot validation
                 test_pre_graph_filter,
                 test_pre_lock_filter,
             )

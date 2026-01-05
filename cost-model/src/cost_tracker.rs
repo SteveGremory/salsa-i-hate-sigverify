@@ -72,7 +72,9 @@ pub struct UpdatedCosts {
 pub struct CostTracker {
     account_cost_limit: u64,
     block_cost_limit: u64,
-    vote_cost_limit: u64,
+    pub vote_cost_limit: u64,
+    /// Original vote cost limit saved before proposer limits applied (0 = not modified)
+    pub original_vote_cost_limit: u64,
     cost_by_writable_accounts: HashMap<Pubkey, u64, ahash::RandomState>,
     block_cost: SharedBlockCost,
     vote_cost: u64,
@@ -100,6 +102,7 @@ impl Default for CostTracker {
             account_cost_limit: MAX_WRITABLE_ACCOUNT_UNITS,
             block_cost_limit: MAX_BLOCK_UNITS,
             vote_cost_limit: MAX_VOTE_UNITS,
+            original_vote_cost_limit: 0,
             cost_by_writable_accounts: HashMap::with_capacity_and_hasher(
                 WRITABLE_ACCOUNTS_PER_BLOCK,
                 ahash::RandomState::new(),
@@ -120,6 +123,7 @@ impl Default for CostTracker {
 impl CostTracker {
     pub fn new_from_parent_limits(&self) -> Self {
         let mut new = Self::default();
+        new.original_vote_cost_limit = self.original_vote_cost_limit;
         new.set_limits(
             self.account_cost_limit,
             self.block_cost_limit,
@@ -153,6 +157,57 @@ impl CostTracker {
         self.account_cost_limit = account_cost_limit;
         self.block_cost_limit = block_cost_limit;
         self.vote_cost_limit = vote_cost_limit;
+    }
+
+    /// Set proposer vote limit (4M CUs) for block execution.
+    /// Saves current limit to original_vote_cost_limit for restoration.
+    pub fn set_proposer_vote_limit(&mut self) {
+        self.original_vote_cost_limit = self.vote_cost_limit;
+        self.vote_cost_limit = 4_000_000;
+    }
+
+    /// Restore vote limit after block execution completes.
+    pub fn restore_vote_limit(&mut self) {
+        if self.original_vote_cost_limit > 0 {
+            self.vote_cost_limit = self.original_vote_cost_limit;
+            self.original_vote_cost_limit = 0;
+        }
+    }
+
+    /// Add actual executed transaction costs to the tracker in batch.
+    /// Used after block execution to track real CUs consumed.
+    /// Takes iterator of (transaction, compute_units, loaded_accounts_data_size) to add all at once.
+    pub fn add_executed_transaction_costs<'a, Tx: TransactionWithMeta + 'a>(
+        &mut self,
+        executed_txs: impl Iterator<Item = (&'a Tx, u64, u32)>,
+    ) {
+        for (tx, actual_compute_units, loaded_accounts_data_size) in executed_txs {
+            self.transaction_count += 1;
+            self.allocated_accounts_data_size += loaded_accounts_data_size as u64;
+            self.block_cost.fetch_add(actual_compute_units);
+
+            // Track signature counts
+            self.transaction_signature_count += tx.num_transaction_signatures();
+            self.secp256k1_instruction_signature_count += tx.num_secp256k1_signatures();
+            self.ed25519_instruction_signature_count += tx.num_ed25519_signatures();
+            self.secp256r1_instruction_signature_count += tx.num_secp256r1_signatures();
+
+            if tx.is_simple_vote_transaction() {
+                self.vote_cost = self.vote_cost.saturating_add(actual_compute_units);
+            }
+
+            // Add per-account costs for writable accounts
+            let account_keys = tx.account_keys();
+            for (i, account_key) in account_keys.iter().enumerate() {
+                if tx.is_writable(i) {
+                    let account_cost = self
+                        .cost_by_writable_accounts
+                        .entry(*account_key)
+                        .or_insert(0);
+                    *account_cost = account_cost.saturating_add(actual_compute_units);
+                }
+            }
+        }
     }
 
     pub fn in_flight_transaction_count(&self) -> usize {

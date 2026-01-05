@@ -805,6 +805,7 @@ mod tests {
         super::*,
         crate::{
             banking_trace::{BankingTracer, Channels},
+            scheduler_synchronization,
             validator::SchedulerPacing,
         },
         agave_banking_stage_ingress_types::BankingPacketBatch,
@@ -1164,6 +1165,11 @@ mod tests {
                 poh_service,
                 entry_receiver,
             ) = create_test_recorder(bank.clone(), blockstore, None, None);
+
+            // Force vanilla scheduling for slot 0 (simulates being past delegation period)
+            scheduler_synchronization::reset_for_tests();
+            scheduler_synchronization::force_vanilla_claim(0);
+
             let _banking_stage = BankingStage::new_num_threads(
                 BlockProductionMethod::CentralScheduler,
                 poh_recorder.clone(),
@@ -1446,6 +1452,10 @@ mod tests {
                     poh_service,
                     entry_receiver,
                 ) = create_test_recorder(bank.clone(), blockstore, None, None);
+
+                // Force vanilla scheduling for slot 0 (simulates being past delegation period)
+                scheduler_synchronization::reset_for_tests();
+                scheduler_synchronization::force_vanilla_claim(0);
 
                 let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 

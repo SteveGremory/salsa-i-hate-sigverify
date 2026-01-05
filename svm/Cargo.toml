@@ -38,6 +38,7 @@ svm-internal = []
 [dependencies]
 ahash = { workspace = true }
 log = { workspace = true }
+scc = { workspace = true }
 percentage = { workspace = true }
 qualifier_attr = { workspace = true, optional = true }
 serde = { workspace = true, features = ["rc"] }

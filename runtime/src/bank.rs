@@ -1394,6 +1394,14 @@ impl Bank {
             epoch_rewards_calculation_cache: parent.epoch_rewards_calculation_cache.clone(),
         };
 
+        // cavey unset limits. if we are proposer again this is set when we set_tpu_bank
+        let mut cost_tracker = new.cost_tracker.write().unwrap();
+        if cost_tracker.original_vote_cost_limit > 0 {
+            cost_tracker.vote_cost_limit = cost_tracker.original_vote_cost_limit;
+            cost_tracker.original_vote_cost_limit = 0;
+        }
+        drop(cost_tracker);
+
         let (_, ancestors_time_us) = measure_us!({
             let mut ancestors = Vec::with_capacity(1 + new.parents().len());
             ancestors.push(new.slot());
@@ -1419,6 +1427,8 @@ impl Bank {
             }
             new.distribute_partitioned_epoch_rewards();
         });
+
+
 
         let (_, cache_preparation_time_us) =
             measure_us!(new.prepare_program_cache_for_upcoming_feature_set());
@@ -2004,6 +2014,25 @@ impl Bank {
 
     pub fn freeze_lock(&self) -> RwLockReadGuard<'_, Hash> {
         self.hash.read().unwrap()
+    }
+
+    /// Lock the blockhash queue to prevent slot from ending during parallel execution.
+    /// This is used alongside freeze_lock for optimistic recording.
+    pub fn blockhash_queue_lock(&self) -> RwLockReadGuard<'_, BlockhashQueue> {
+        self.blockhash_queue.read().unwrap()
+    }
+
+    /// Set proposer vote limit (4M CUs) for our leader slot.
+    /// Limits vote processing capacity during block execution.
+    pub fn set_proposer_vote_limit(&self) {
+        self.write_cost_tracker()
+            .unwrap()
+            .set_proposer_vote_limit();
+    }
+
+    /// Restore vote limit after block execution completes.
+    pub fn restore_vote_limit(&self) {
+        self.write_cost_tracker().unwrap().restore_vote_limit();
     }
 
     pub fn hash(&self) -> Hash {
@@ -3267,14 +3296,14 @@ impl Bank {
         }
         let mut simulation_results = Vec::new();
 
-        let mut account_overrides = AccountOverrides::default();
+        let account_overrides = AccountOverrides::default();
 
         // Pre-load all the account state into account overrides
         for transaction in transactions {
             let account_keys = transaction.account_keys();
             account_overrides.merge(self.get_account_overrides_for_simulation(&account_keys));
             for account in transaction.account_keys().iter() {
-                if !account_overrides.accounts().contains_key(account) {
+                if account_overrides.get(account).is_none() {
                     if let Some((account_shared_data, _slot)) =
                         self.get_account_shared_data(account)
                     {
@@ -3471,7 +3500,7 @@ impl Bank {
         &self,
         account_keys: &AccountKeys,
     ) -> AccountOverrides {
-        let mut account_overrides = AccountOverrides::default();
+        let account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {
             let current_account = self.get_account_with_fixed_root(&slot_history_id);

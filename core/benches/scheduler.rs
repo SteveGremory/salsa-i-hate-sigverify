@@ -218,6 +218,7 @@ fn timing_scheduler<T: ReceiveAndBuffer, S: Scheduler<T::Transaction>>(
                         .schedule(
                             black_box(&mut container),
                             u64::MAX, // no budget
+                            0, // target_slot - benchmark doesn't care about slot validation
                             bench_env.filter_1,
                             bench_env.filter_2,
                         )

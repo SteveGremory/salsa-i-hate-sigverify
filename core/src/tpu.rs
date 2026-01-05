@@ -138,6 +138,7 @@ pub struct Tpu {
     fetch_stage_manager: FetchStageManager,
     bundle_stage: BundleStage,
     bundle_sigverify_stage: BundleSigverifyStage,
+    block_stage: crate::block_stage::BlockStage,
 }
 
 impl Tpu {
@@ -360,6 +361,7 @@ impl Tpu {
 
         let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
         let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
+        let (block_sender, block_receiver) = bounded::<crate::block_stage::HarmonicBlock>(1024);
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
             unverified_bundle_sender,
@@ -369,6 +371,7 @@ impl Tpu {
             exit.clone(),
             &block_builder_fee_info,
             shredstream_receiver_address.clone(),
+            block_sender,
         );
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
         let bundle_sigverify_stage = BundleSigverifyStage::new(
@@ -449,17 +452,29 @@ impl Tpu {
             cluster_info,
             bank_forks.clone(),
             poh_recorder,
-            transaction_recorder,
+            transaction_recorder.clone(),
             verified_bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
             log_messages_bytes_limit,
             exit.clone(),
             tip_manager,
             bundle_account_locker,
             &block_builder_fee_info,
-            prioritization_fee_cache,
+            &prioritization_fee_cache,
             blacklisted_accounts,
+        );
+
+        let block_stage = crate::block_stage::BlockStage::new(
+            cluster_info,
+            bank_forks.clone(),
+            transaction_recorder,
+            block_receiver,
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            exit.clone(),
+            &prioritization_fee_cache,
         );
 
         let (entry_receiver, tpu_entry_notifier) =
@@ -521,6 +536,7 @@ impl Tpu {
             fetch_stage_manager,
             bundle_stage,
             bundle_sigverify_stage,
+            block_stage,
         }
     }
 
@@ -547,6 +563,7 @@ impl Tpu {
             self.tpu_vote_quic_t.join(),
             self.bundle_stage.join(),
             self.bundle_sigverify_stage.join(),
+            self.block_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),

@@ -114,6 +114,18 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         let bank = leader_state
             .working_bank()
             .expect("active_leader_state_with_timeout should only return an active bank");
+
+        // Validate that the bank slot matches the slot we scheduled for.
+        // This prevents executing transactions on the wrong slot due to race conditions.
+        if bank.slot() != work.target_slot {
+            log::info!(
+                "Slot mismatch: work scheduled for slot {} but current bank is slot {}",
+                work.target_slot,
+                bank.slot()
+            );
+            return Ok(ProcessingStatus::CouldNotProcess(work));
+        }
+
         self.metrics
             .count_metrics
             .num_messages_processed
@@ -1771,12 +1783,14 @@ mod tests {
             ids: vec![id],
             transactions,
             max_ages: vec![max_age],
+            target_slot: bank.slot(),
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid);
         assert_eq!(consumed.work.ids, vec![id]);
         assert_eq!(consumed.work.max_ages, vec![max_age]);
+        assert_eq!(consumed.work.target_slot, bank.slot());
         assert_eq!(
             consumed.retryable_indexes,
             vec![RetryableIndex::new(0, true)]
@@ -1827,12 +1841,14 @@ mod tests {
             ids: vec![id],
             transactions,
             max_ages: vec![max_age],
+            target_slot: bank.slot(),
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid);
         assert_eq!(consumed.work.ids, vec![id]);
         assert_eq!(consumed.work.max_ages, vec![max_age]);
+        assert_eq!(consumed.work.target_slot, bank.slot());
         assert_eq!(consumed.retryable_indexes, Vec::new());
 
         drop(test_frame);
@@ -1883,6 +1899,7 @@ mod tests {
                 ids: vec![id1, id2],
                 transactions: txs,
                 max_ages: vec![max_age, max_age],
+                target_slot: bank.slot(),
             })
             .unwrap();
 
@@ -1890,6 +1907,7 @@ mod tests {
         assert_eq!(consumed.work.batch_id, bid);
         assert_eq!(consumed.work.ids, vec![id1, id2]);
         assert_eq!(consumed.work.max_ages, vec![max_age, max_age]);
+        assert_eq!(consumed.work.target_slot, bank.slot());
 
         // id2 succeeds with simd83, or is retryable due to lock conflict without simd83
         assert_eq!(
@@ -1957,6 +1975,7 @@ mod tests {
                 ids: vec![id1],
                 transactions: txs1,
                 max_ages: vec![max_age],
+                target_slot: bank.slot(),
             })
             .unwrap();
 
@@ -1966,18 +1985,21 @@ mod tests {
                 ids: vec![id2],
                 transactions: txs2,
                 max_ages: vec![max_age],
+                target_slot: bank.slot(),
             })
             .unwrap();
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid1);
         assert_eq!(consumed.work.ids, vec![id1]);
         assert_eq!(consumed.work.max_ages, vec![max_age]);
+        assert_eq!(consumed.work.target_slot, bank.slot());
         assert_eq!(consumed.retryable_indexes, Vec::new());
 
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid2);
         assert_eq!(consumed.work.ids, vec![id2]);
         assert_eq!(consumed.work.max_ages, vec![max_age]);
+        assert_eq!(consumed.work.target_slot, bank.slot());
         assert_eq!(consumed.retryable_indexes, Vec::new());
 
         drop(test_frame);
@@ -2110,6 +2132,7 @@ mod tests {
                         alt_invalidation_slot: bank.slot() + 1,
                     },
                 ],
+                target_slot: bank.slot(),
             })
             .unwrap();
 

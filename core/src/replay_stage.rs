@@ -2275,6 +2275,8 @@ impl ReplayStage {
                 slot_status_notifier,
                 NewBankOptions { vote_only_bank },
             );
+            // Limit votes to 4M CUs during our leader slot
+            tpu_bank.set_proposer_vote_limit();
             // make sure parent is frozen for finalized hashes via the above
             // new()-ing of its child bank
             banking_tracer.hash_event(parent.slot(), &parent.last_blockhash(), &parent.hash());
