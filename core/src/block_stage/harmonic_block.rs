@@ -23,8 +23,4 @@ impl HarmonicBlock {
     pub fn intended_slot(&self) -> Slot {
         self.intended_slot
     }
-
-    pub fn take(self) -> PacketBatch {
-        self.transactions
-    }
 }

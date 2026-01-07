@@ -36,7 +36,7 @@ fn get_slot(value: u64) -> u64 {
 /// Check if the state indicates the slot was claimed by block.
 #[inline]
 fn is_block_claim(value: u64) -> bool {
-    value & BLOCK_CLAIMED_BIT != 0
+    value != SENTINEL && value & BLOCK_CLAIMED_BIT != 0
 }
 
 /// Create a state value for a slot claimed by vanilla (top bit clear).
@@ -49,30 +49,6 @@ fn vanilla_claim(slot: u64) -> u64 {
 #[inline]
 fn block_claim(slot: u64) -> u64 {
     (slot & SLOT_MASK) | BLOCK_CLAIMED_BIT
-}
-
-/// Reset the scheduler synchronization state. Used in tests to ensure
-/// a clean slate for each test.
-#[cfg(any(test, feature = "dev-context-only-utils"))]
-pub fn reset_for_tests() {
-    SCHEDULER_STATE.store(SENTINEL, Ordering::Release);
-}
-
-/// Force claim a slot for vanilla scheduling. Used in tests to simulate
-/// being past the delegation period.
-#[cfg(any(test, feature = "dev-context-only-utils"))]
-pub fn force_vanilla_claim(slot: u64) {
-    SCHEDULER_STATE.store(vanilla_claim(slot), Ordering::Release);
-}
-
-/// Returns the last slot that was scheduled (without the block/vanilla flag).
-pub fn last_slot_scheduled() -> u64 {
-    get_slot(SCHEDULER_STATE.load(Ordering::Acquire))
-}
-
-/// Returns true if the current slot was claimed by block, false if by vanilla.
-pub fn is_slot_claimed_by_block() -> bool {
-    is_block_claim(SCHEDULER_STATE.load(Ordering::Acquire))
 }
 
 /// If vanilla should schedule, the internal private atomic is
@@ -92,12 +68,12 @@ pub fn vanilla_should_schedule(current_slot: u64, in_delegation_period: bool) ->
     if state != SENTINEL && get_slot(state) == current_slot {
         // Check who claimed it - if vanilla claimed, all vanilla threads can consume
         // If block claimed, no vanilla thread should consume
-        let claimed_by_block = is_block_claim(state);
+        let claimed_by_vanilla = is_block_claim(state);
         info!(
             "vanilla_should_schedule: slot {} already claimed, by_block={}",
-            current_slot, claimed_by_block
+            current_slot, claimed_by_vanilla
         );
-        return Some(!claimed_by_block);
+        return Some(!claimed_by_vanilla);
     }
 
     // If still in delegation period and slot not yet claimed, don't try to claim
@@ -235,6 +211,28 @@ pub fn block_failed(current_slot: u64) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reset the scheduler synchronization state. Used in tests to ensure
+    /// a clean slate for each test.
+    fn reset_for_tests() {
+        SCHEDULER_STATE.store(SENTINEL, Ordering::Release);
+    }
+
+    /// Force claim a slot for vanilla scheduling. Used in tests to simulate
+    /// being past the delegation period.
+    fn force_vanilla_claim(slot: u64) {
+        SCHEDULER_STATE.store(vanilla_claim(slot), Ordering::Release);
+    }
+
+    /// Returns the last slot that was scheduled (without the block/vanilla flag).
+    fn last_slot_scheduled() -> u64 {
+        get_slot(SCHEDULER_STATE.load(Ordering::Acquire))
+    }
+
+    /// Returns true if the current slot was claimed by block, false if by vanilla.
+    fn is_slot_claimed_by_block() -> bool {
+        is_block_claim(SCHEDULER_STATE.load(Ordering::Acquire))
+    }
 
     #[test]
     fn test_encoding() {

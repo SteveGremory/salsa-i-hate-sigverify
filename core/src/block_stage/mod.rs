@@ -2,14 +2,16 @@
 //! Unlike bundles, blocks have no transaction limit and the uuid field contains the intended slot.
 
 mod block_consumer;
-mod harmonic_block;
 mod devin_scheduler;
+mod harmonic_block;
 mod timer;
 
 pub use block_consumer::BlockConsumer;
-pub use harmonic_block::HarmonicBlock;
 pub use devin_scheduler::DevinScheduler;
+pub use harmonic_block::HarmonicBlock;
 pub use timer::Timer;
+
+use crate::banking_stage::decision_maker::{BufferedPacketsDecision, DecisionMaker};
 
 use {
     crate::{
@@ -24,7 +26,7 @@ use {
     },
     agave_transaction_view::resolved_transaction_view::ResolvedTransactionView,
     crossbeam_channel::{Receiver, RecvTimeoutError},
-    log::info,
+    log::{info, warn},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_poh::transaction_recorder::TransactionRecorder,
@@ -48,7 +50,6 @@ pub struct BlockStage {
 }
 
 impl BlockStage {
-    #[allow(clippy::new_ret_no_self)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
@@ -114,11 +115,11 @@ impl BlockStage {
         block_receiver: Receiver<HarmonicBlock>,
         mut consumer: BlockConsumer,
         exit: Arc<AtomicBool>,
-        _cluster_info: Arc<ClusterInfo>,
+        cluster_info: Arc<ClusterInfo>,
     ) {
         while !exit.load(Ordering::Relaxed) {
             match block_receiver.recv_timeout(Duration::from_millis(10)) {
-                Ok(block_bundle) => {
+                Ok(block) => {
                     let (root_bank, working_bank) = {
                         let bank_forks_guard = bank_forks.read().unwrap();
                         (
@@ -127,7 +128,7 @@ impl BlockStage {
                         )
                     };
 
-                    let intended_slot = block_bundle.intended_slot();
+                    let intended_slot = block.intended_slot();
                     let current_slot = working_bank.slot();
 
                     // Check if this block is for the correct slot
@@ -139,51 +140,37 @@ impl BlockStage {
                         continue;
                     }
 
-                    // Check if we're in the delegation period and can schedule this block
-                    let current_tick_height = working_bank.tick_height();
-                    let max_tick_height = working_bank.max_tick_height();
-                    let ticks_per_slot = working_bank.ticks_per_slot();
-                    let start_tick = max_tick_height - ticks_per_slot;
-                    let ticks_into_slot = current_tick_height.saturating_sub(start_tick);
-                    let delegation_period_length = ticks_per_slot * 15 / 16;
-                    let in_delegation_period = ticks_into_slot < delegation_period_length;
-
-                    // Try to claim this slot for block scheduling
-                    match scheduler_synchronization::block_should_schedule(
-                        current_slot,
-                        in_delegation_period,
-                    ) {
-                        Some(true) => {
-                            // We claimed the slot, proceed with processing
-                            info!("Block stage claimed slot {}", current_slot);
-                        }
-                        Some(false) => {
-                            // Slot was already claimed by someone else
-                            info!(
-                                "Block stage could not claim slot {}, already scheduled",
-                                current_slot
-                            );
-                            continue;
-                        }
-                        None => {
-                            // Not in delegation period, can't schedule block
-                            info!(
-                                "Block stage cannot schedule for slot {}, not in delegation period",
-                                current_slot
-                            );
-                            continue;
-                        }
+                    // Sanity check we are leader
+                    if !cluster_info.id().eq(working_bank.collector_id()) {
+                        warn!("received block for which we are not leader");
+                        continue;
                     }
 
-                    let batch = block_bundle.take();
+                    // Sanity check block is not empty.
+                    // Note this is intentionally done after checking this was intended for us
+                    if block.transactions().is_empty() {
+                        warn!(
+                            "received empty block intended for our slot {}",
+                            block.intended_slot()
+                        );
+                    }
 
-                    // Translate packets to RuntimeTransaction<ResolvedTransactionView>
-                    // using zerocopy TransactionView instead of bincode deserialization
-                    let (transactions, max_ages) =
-                        Self::translate_packets_to_transactions(&batch, &root_bank, &working_bank);
+                    // Attempt to claim the slot for block stage
+                    let decision = BufferedPacketsDecision::Consume(working_bank);
+                    if let BufferedPacketsDecision::Consume(working_bank) =
+                        DecisionMaker::maybe_consume::<false>(decision)
+                    {
+                        // Claimed! Now record, execute, commit
 
-                    // Process blocks
-                    if !transactions.is_empty() {
+                        // Translate packets to RuntimeTransaction<ResolvedTransactionView>
+                        // using zerocopy TransactionView instead of bincode deserialization
+                        let (transactions, max_ages) = Self::translate_packets_to_transactions(
+                            &block.transactions(),
+                            &root_bank,
+                            &working_bank,
+                        );
+
+                        // Process blocks
                         let output = consumer.process_and_record_block_transactions(
                             &working_bank,
                             &transactions,
@@ -192,18 +179,21 @@ impl BlockStage {
                         );
 
                         // Check if recording failed - if so, revert so vanilla can build fallback block
-                        if output
+                        if let Err(e) = output
                             .execute_and_commit_transactions_output
                             .commit_transactions_result
-                            .is_err()
                         {
                             info!(
-                                "Block recording failed for slot {}, reverting to vanilla",
-                                current_slot
+                                "Block recording failed for slot {}, reverting to vanilla: {:?}",
+                                current_slot, e
                             );
                             scheduler_synchronization::block_failed(current_slot);
                         }
-                    }
+                    } else {
+                        // Failed to claim for this slot.
+                        info!("block stage failed to claim slot {}", bank.slot());
+                        continue;
+                    };
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     // Continue loop
