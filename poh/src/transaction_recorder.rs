@@ -62,7 +62,7 @@ impl TransactionRecorder {
             record_transactions_timings.hash_us = Saturating(hash_us);
 
             let (res, poh_record_us) =
-                measure_us!(self.record(bank_id, vec![hash], vec![transactions]));
+                measure_us!(self.record(bank_id, vec![hash], vec![transactions], false));
             record_transactions_timings.poh_record_us = Saturating(poh_record_us);
 
             match res {
@@ -106,9 +106,10 @@ impl TransactionRecorder {
         bank_id: BankId,
         mixins: Vec<Hash>,
         transaction_batches: Vec<Vec<VersionedTransaction>>,
+        harmonic: bool,
     ) -> Result<Option<usize>, RecordSenderError> {
         self.record_sender
-            .try_send(Record::new(mixins, transaction_batches, bank_id))
+            .try_send(Record::new(mixins, transaction_batches, bank_id, harmonic))
     }
 
     pub fn record_bundle(
@@ -130,7 +131,7 @@ impl TransactionRecorder {
                 batches.push(batch);
             }
 
-            let (res, poh_record_us) = measure_us!(self.record(bank_id, hashes, batches));
+            let (res, poh_record_us) = measure_us!(self.record(bank_id, hashes, batches, false));
             record_transactions_timings.poh_record_us = Saturating(poh_record_us);
 
             match res {

@@ -37,7 +37,7 @@ pub const DEFAULT_HASHES_PER_BATCH: u64 =
 
 pub const DEFAULT_PINNED_CPU_CORE: usize = 0;
 
-const TARGET_SLOT_ADJUSTMENT_NS: u64 = 50_000_000;
+const TARGET_SLOT_ADJUSTMENT_NS: u64 = 0;
 
 #[derive(Debug)]
 struct PohTiming {
@@ -228,7 +228,14 @@ impl PohService {
             }
 
             if let Some(service_message) = service_message {
-                Self::handle_service_message(&poh_recorder, service_message, &mut record_receiver);
+                // Dummy block_received (not used in low-power mode)
+                let mut block_received = false;
+                Self::handle_service_message(
+                    &poh_recorder,
+                    service_message,
+                    &mut record_receiver,
+                    &mut block_received,
+                );
                 should_shutdown_for_test_producers =
                     Self::should_shutdown_for_test_producers(&poh_recorder);
                 if should_shutdown_for_test_producers {
@@ -349,7 +356,14 @@ impl PohService {
                 warn!("exit signal is ignored because PohService is scheduled to exit soon");
             }
             if let Some(service_message) = service_message {
-                Self::handle_service_message(&poh_recorder, service_message, &mut record_receiver);
+                // Dummy block_received (not used in short-lived low-power mode)
+                let mut block_received = false;
+                Self::handle_service_message(
+                    &poh_recorder,
+                    service_message,
+                    &mut record_receiver,
+                    &mut block_received,
+                );
                 should_shutdown_for_test_producers =
                     Self::should_shutdown_for_test_producers(&poh_recorder);
                 if should_shutdown_for_test_producers {
@@ -388,6 +402,7 @@ impl PohService {
         poh: &Arc<Mutex<Poh>>,
         target_ns_per_tick: u64,
         ticks_per_slot: u64,
+        block_received: &mut bool,
     ) -> bool {
         match next_record.take() {
             Some(mut record) => {
@@ -399,6 +414,13 @@ impl PohService {
                 timing.total_lock_time_ns += lock_time.as_ns();
                 let mut record_time = Measure::start("record");
                 loop {
+                    // Check if this is a harmonic block record
+                    if record.harmonic {
+                        let slot = poh_recorder_l.bank().map(|b| b.slot()).unwrap_or(0);
+                        info!("PohService received harmonic block for slot {}", slot);
+                        *block_received = true;
+                    }
+
                     match poh_recorder_l.record(
                         record.bank_id,
                         record.mixins,
@@ -439,7 +461,6 @@ impl PohService {
                     timing.num_hashes += hashes_per_batch;
                     let mut hash_time = Measure::start("hash");
                     let should_tick = poh_l.hash(hashes_per_batch);
-                    let ideal_time = poh_l.target_poh_time(target_ns_per_tick);
                     hash_time.stop();
 
                     // shutdown if another batch would push us over the shutdown threshold.
@@ -463,25 +484,31 @@ impl PohService {
                         *next_record = Some(record);
                         break;
                     }
-                    // check to see if we need to wait to catch up to ideal
-                    let wait_start = Instant::now();
-                    if ideal_time <= wait_start {
-                        // no, keep hashing. We still hold the lock.
-                        continue;
-                    }
 
-                    // busy wait, polling for new records and after dropping poh lock (reset can occur, for example)
-                    drop(poh_l);
-                    while ideal_time > Instant::now() {
-                        // check to see if a record request has been sent
-                        if let Ok(record) = record_receiver.try_recv() {
-                            // remember the record we just received as the next record to occur
-                            *next_record = Some(record);
-                            break;
+                    // Don't even bother with this busy polling if we are speed
+                    // running the slot
+                    if target_ns_per_tick != 1 {
+                        let ideal_time = poh_l.target_poh_time(target_ns_per_tick);
+                        // check to see if we need to wait to catch up to ideal
+                        let wait_start = Instant::now();
+                        if ideal_time <= wait_start {
+                            // no, keep hashing. We still hold the lock.
+                            continue;
                         }
+
+                        // busy wait, polling for new records and after dropping poh lock (reset can occur, for example)
+                        drop(poh_l);
+                        while ideal_time > Instant::now() {
+                            // check to see if a record request has been sent
+                            if let Ok(record) = record_receiver.try_recv() {
+                                // remember the record we just received as the next record to occur
+                                *next_record = Some(record);
+                                break;
+                            }
+                        }
+                        timing.total_sleep_us += wait_start.elapsed().as_micros() as u64;
+                        break;
                     }
-                    timing.total_sleep_us += wait_start.elapsed().as_micros() as u64;
-                    break;
                 }
             }
         };
@@ -495,8 +522,18 @@ impl PohService {
         hashes_per_batch: u64,
         mut record_receiver: RecordReceiver,
         poh_service_receiver: PohServiceMessageReceiver,
-        target_ns_per_tick: u64,
+        original_target_ns_per_tick: u64,
     ) {
+        // Whether or not we have received a harmonic block for the current slot
+        let mut block_received = false;
+        // The target ns per tick when waiting for a block to arrive
+        let extended_target_ns_per_tick =
+            Duration::from_millis(430).as_nanos() as u64 / ticks_per_slot;
+        // The target ns per tick after a block has arrived
+        let shortened_target_ns_per_tick = 1;
+        // Current target ns per tick (dynamically adjusted)
+        let mut target_ns_per_tick = original_target_ns_per_tick;
+
         let poh = poh_recorder.read().unwrap().poh.clone();
         let mut timing = PohTiming::new();
         let mut next_record = None;
@@ -524,7 +561,39 @@ impl PohService {
                     &poh,
                     target_ns_per_tick,
                     ticks_per_slot,
+                    &mut block_received,
                 );
+
+                // Dynamic adjustment of target_ns_per_tick based on block receipt
+                target_ns_per_tick = {
+                    let poh_recorder_r = poh_recorder.read().unwrap();
+                    let max_tick_height = poh_recorder_r
+                        .bank()
+                        .map(|b| b.max_tick_height())
+                        .unwrap_or(0);
+                    if poh_recorder_r.tick_height() < max_tick_height {
+                        if block_received {
+                            if target_ns_per_tick != shortened_target_ns_per_tick {
+                                info!("PohService shortening target ns per tick");
+                            }
+                            // We have received a block - speedrun the rest of the slot
+                            shortened_target_ns_per_tick
+                        } else {
+                            if target_ns_per_tick != extended_target_ns_per_tick {
+                                info!("PohService extending target ns per tick");
+                            }
+                            // We are waiting for a block - delay in case the block is held up
+                            extended_target_ns_per_tick
+                        }
+                    } else {
+                        if target_ns_per_tick != original_target_ns_per_tick {
+                            info!("PohService restoring target ns per tick");
+                        }
+                        // If we aren't leader or we have a block, use the normal slot timing
+                        original_target_ns_per_tick
+                    }
+                };
+
                 if should_tick {
                     // Lock PohRecorder only for the final hash. record_or_hash will lock PohRecorder for record calls but not for hashing.
                     {
@@ -556,6 +625,7 @@ impl PohService {
                         &poh_recorder,
                         service_message,
                         &mut record_receiver,
+                        &mut block_received,
                     );
                 }
             }
@@ -585,6 +655,7 @@ impl PohService {
         poh_recorder: &RwLock<PohRecorder>,
         mut service_message: PohServiceMessageGuard,
         record_receiver: &mut RecordReceiver,
+        block_received: &mut bool,
     ) {
         {
             let mut recorder = poh_recorder.write().unwrap();
@@ -604,6 +675,8 @@ impl PohService {
                     if should_restart {
                         record_receiver.restart(bank_id);
                     }
+                    // Harmonic: reset pacing state for the new slot
+                    *block_received = false;
                 }
             }
         }
@@ -900,6 +973,7 @@ mod tests {
                 mixins: vec![Hash::new_unique()],
                 transaction_batches: vec![vec![VersionedTransaction::from(test_tx())]],
                 bank_id: bank.bank_id(),
+                harmonic: false,
             })
             .unwrap();
 

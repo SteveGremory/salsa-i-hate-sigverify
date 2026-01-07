@@ -191,7 +191,7 @@ impl BlockStage {
                         }
                     } else {
                         // Failed to claim for this slot.
-                        info!("block stage failed to claim slot {}", bank.slot());
+                        info!("block stage failed to claim slot {}", current_slot);
                         continue;
                     };
                 }

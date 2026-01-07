@@ -65,6 +65,9 @@ pub enum PohRecorderError {
 
     #[error("harmonic block invalid signature")]
     HarmonicBlockInvalidSignature,
+
+    #[error("harmonic block invalid transaction")]
+    HarmonicBlockInvalidTransaction,
 }
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
@@ -80,6 +83,9 @@ pub struct Record {
     pub mixins: Vec<Hash>,
     pub transaction_batches: Vec<Vec<VersionedTransaction>>,
     pub bank_id: BankId,
+    /// Whether this record is from a harmonic block (block auction house).
+    /// Used for PoH pacing - when true, we speedrun the rest of the slot.
+    pub harmonic: bool,
 }
 
 impl Record {
@@ -87,11 +93,13 @@ impl Record {
         mixins: Vec<Hash>,
         transaction_batches: Vec<Vec<VersionedTransaction>>,
         bank_id: BankId,
+        harmonic: bool,
     ) -> Self {
         Self {
             mixins,
             transaction_batches,
             bank_id,
+            harmonic,
         }
     }
 }
@@ -342,8 +350,9 @@ impl PohRecorder {
             .saturating_sub(self.tick_height() + 1);
         // The last hash in each tick is reserved for the tick itself, so subtract 1 per tick
         let tick_remaining_hashes = poh_lock.remaining_hashes().saturating_sub(1);
-        let total_remaining_hashes = tick_remaining_hashes
-            .saturating_add(remaining_ticks.saturating_mul(poh_lock.hashes_per_tick().saturating_sub(1)));
+        let total_remaining_hashes = tick_remaining_hashes.saturating_add(
+            remaining_ticks.saturating_mul(poh_lock.hashes_per_tick().saturating_sub(1)),
+        );
         if mixins.len() as u64 > total_remaining_hashes {
             info!(
                 "Insufficient hashes remaining for all-or-nothing recording: {} mixins > {} remaining hashes",

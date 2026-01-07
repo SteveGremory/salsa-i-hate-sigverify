@@ -260,10 +260,11 @@ impl BlockConsumer {
         let blockhash_queue_lock = bank.blockhash_queue_lock();
 
         // Record all transactions - this is all-or-nothing for the entire block
+        // Pass harmonic=true to trigger PoH speedrun after this block is recorded
         let (record_result, poh_record_us) =
             measure_us!(self
                 .transaction_recorder
-                .record(bank.bank_id(), hashes, batches));
+                .record(bank.bank_id(), hashes, batches, true));
         record_transactions_timings.poh_record_us = Saturating(poh_record_us);
 
         let starting_transaction_index = match record_result {
