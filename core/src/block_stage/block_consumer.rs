@@ -238,21 +238,15 @@ impl BlockConsumer {
             };
         }
 
-        // Convert to versioned transactions for recording
-        let versioned_transactions: Vec<_> = transactions
-            .iter()
-            .map(|tx| tx.to_versioned_transaction())
-            .collect();
-
         // Step 1: OPTIMISTICALLY RECORD ALL TRANSACTIONS TO POH FIRST
         // This broadcasts the block to the cluster so they can replay alongside us
         let mut record_transactions_timings = RecordTransactionsTimings::default();
 
         // Hash each transaction individually
-        let mut hashes = Vec::with_capacity(versioned_transactions.len());
-        let mut batches = Vec::with_capacity(versioned_transactions.len());
-        for tx in &versioned_transactions {
-            let batch = vec![tx.clone()];
+        let mut hashes = Vec::with_capacity(transactions.len());
+        let mut batches = Vec::with_capacity(transactions.len());
+        for tx in transactions.iter() {
+            let batch = vec![tx.to_versioned_transaction()];
             let (hash, hash_us) = measure_us!(hash_transactions(&batch));
             record_transactions_timings.hash_us += hash_us;
             hashes.push(hash);
