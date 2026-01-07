@@ -1395,12 +1395,7 @@ impl Bank {
         };
 
         // cavey unset limits. if we are proposer again this is set when we set_tpu_bank
-        let mut cost_tracker = new.cost_tracker.write().unwrap();
-        if cost_tracker.original_vote_cost_limit > 0 {
-            cost_tracker.vote_cost_limit = cost_tracker.original_vote_cost_limit;
-            cost_tracker.original_vote_cost_limit = 0;
-        }
-        drop(cost_tracker);
+        new.restore_vote_limit();    
 
         let (_, ancestors_time_us) = measure_us!({
             let mut ancestors = Vec::with_capacity(1 + new.parents().len());
