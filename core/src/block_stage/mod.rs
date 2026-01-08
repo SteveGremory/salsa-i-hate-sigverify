@@ -86,37 +86,6 @@ impl BlockStage {
         self.block_thread.join()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn start_block_thread(
-        cluster_info: &Arc<ClusterInfo>,
-        bank_forks: Arc<RwLock<BankForks>>,
-        transaction_recorder: TransactionRecorder,
-        block_receiver: Receiver<HarmonicBlock>,
-        transaction_status_sender: Option<TransactionStatusSender>,
-        replay_vote_sender: ReplayVoteSender,
-        log_message_bytes_limit: Option<usize>,
-        exit: Arc<AtomicBool>,
-        prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
-    ) -> Self {
-        let committer = Committer::new(
-            transaction_status_sender,
-            replay_vote_sender,
-            prioritization_fee_cache.clone(),
-        );
-
-        let consumer = BlockConsumer::new(committer, transaction_recorder, log_message_bytes_limit);
-
-        let cluster_info = cluster_info.clone();
-        let block_thread = Builder::new()
-            .name("solBlockStgTx".to_string())
-            .spawn(move || {
-                Self::process_loop(bank_forks, block_receiver, consumer, exit, cluster_info);
-            })
-            .unwrap();
-
-        Self { block_thread }
-    }
-
     fn process_loop(
         bank_forks: Arc<RwLock<BankForks>>,
         block_receiver: Receiver<HarmonicBlock>,
