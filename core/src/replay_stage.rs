@@ -2285,6 +2285,8 @@ impl ReplayStage {
             // new()-ing of its child bank
             banking_tracer.hash_event(parent.slot(), &parent.last_blockhash(), &parent.hash());
 
+            // Capture collector_id before tpu_bank is moved
+            let tpu_bank_collector_id = *tpu_bank.collector_id();
             update_bank_forks_and_poh_recorder_for_new_tpu_bank(
                 bank_forks,
                 poh_controller,
@@ -2292,7 +2294,19 @@ impl ReplayStage {
             );
 
             // Send leader window notification to block auction house
-            let window_start_time = std::time::SystemTime::now();
+            // Use cavey_next_time for consistent slot timing across consecutive leader slots.
+            // This must be synced with PoH start time pacing:
+            // - PoH uses parent.cavey_next_time.0 (Instant) for internal pacing
+            // - Notification uses parent.cavey_next_time.1 (SystemTime) for external communication
+            // Both come from the same tuple, ensuring they represent the same logical time point.
+            let parent_was_our_leader_prev_slot =
+                parent.collector_id() == &tpu_bank_collector_id && parent_slot + 1 == poh_slot;
+            let window_start_time = if parent_was_our_leader_prev_slot {
+                // Use parent's expected start time (synced with PoH which uses .0 component)
+                parent.cavey_next_time.1.min(SystemTime::now())
+            } else {
+                SystemTime::now()
+            };
             match leader_window_sender.try_send((window_start_time, poh_slot)) {
                 Ok(()) => {
                     info!(
