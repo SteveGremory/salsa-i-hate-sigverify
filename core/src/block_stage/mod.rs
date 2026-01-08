@@ -62,17 +62,24 @@ impl BlockStage {
         exit: Arc<AtomicBool>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
     ) -> Self {
-        Self::start_block_thread(
-            cluster_info,
-            bank_forks,
-            transaction_recorder,
-            block_receiver,
+        let committer = Committer::new(
             transaction_status_sender,
             replay_vote_sender,
-            log_messages_bytes_limit,
-            exit,
-            prioritization_fee_cache,
-        )
+            prioritization_fee_cache.clone(),
+        );
+
+        let consumer =
+            BlockConsumer::new(committer, transaction_recorder, log_messages_bytes_limit);
+
+        let cluster_info = Arc::clone(&cluster_info)
+        let block_thread = Builder::new()
+            .name("solBlockStgTx".to_string())
+            .spawn(move || {
+                Self::process_loop(bank_forks, block_receiver, consumer, exit, cluster_info);
+            })
+            .unwrap();
+
+        Self { block_thread }
     }
 
     pub fn join(self) -> thread::Result<()> {
