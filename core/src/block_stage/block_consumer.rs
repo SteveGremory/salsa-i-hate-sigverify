@@ -646,11 +646,7 @@ impl BlockConsumer {
         ExecuteAndCommitTransactionsOutput {
             transaction_counts,
             retryable_transaction_indexes: vec![],
-            commit_transactions_result: if execution_error.is_some() {
-                Ok(all_commit_details) // Still return partial results
-            } else {
-                Ok(all_commit_details)
-            },
+            commit_transactions_result: Ok(all_commit_details),
             execute_and_commit_timings,
             error_counters: TransactionErrorMetrics::default(),
             min_prioritization_fees,
