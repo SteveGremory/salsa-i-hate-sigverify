@@ -224,6 +224,16 @@ where
                     |_| PreLockFilterAction::AttemptToSchedule // no pre-lock filter for now
                 )?);
 
+                if scheduling_summary.num_scheduled > 0 {
+                    log::info!(
+                        "CAVEY DEBUG: vanilla scheduled {} txns for slot {} (tick_height={}, max_tick_height={})",
+                        scheduling_summary.num_scheduled,
+                        bank.slot(),
+                        bank.tick_height(),
+                        bank.max_tick_height()
+                    );
+                }
+
                 self.count_metrics.update(|count_metrics| {
                     count_metrics.num_scheduled += scheduling_summary.num_scheduled;
                     count_metrics.num_unschedulable_conflicts +=

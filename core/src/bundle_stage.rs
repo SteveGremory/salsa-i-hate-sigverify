@@ -585,6 +585,13 @@ impl BundleStage {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
             BufferedPacketsDecision::Consume(bank) => {
+                info!(
+                    "CAVEY DEBUG: bundle stage consuming for slot {} (tick_height={}, max_tick_height={}, buffered={})",
+                    bank.slot(),
+                    bank.tick_height(),
+                    bank.max_tick_height(),
+                    bundle_storage.unprocessed_bundles_len()
+                );
                 Self::consume_bundles(
                     &bank,
                     bundle_storage,
