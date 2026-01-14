@@ -460,7 +460,7 @@ impl Tpu {
             replay_vote_sender.clone(),
             log_messages_bytes_limit,
             exit.clone(),
-            tip_manager,
+            tip_manager.clone(),
             bundle_account_locker,
             &block_builder_fee_info,
             &prioritization_fee_cache,
@@ -477,6 +477,9 @@ impl Tpu {
             log_messages_bytes_limit,
             exit.clone(),
             &prioritization_fee_cache,
+            tip_manager,
+            block_builder_fee_info,
+            cluster_info.keypair().clone(),
         );
 
         let (entry_receiver, tpu_entry_notifier) =

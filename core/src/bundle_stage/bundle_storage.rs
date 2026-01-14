@@ -33,12 +33,14 @@ pub enum BundleStorageError {
 
 struct BundleTransactionId {
     container_ids: Vec<usize>,
+    intended_slot: Slot,
 }
 
 pub struct BundleStorageEntry {
     pub container_ids: Vec<usize>,
     pub transactions: Vec<RuntimeTransactionView>,
     pub max_ages: Vec<MaxAge>,
+    pub intended_slot: Slot,
 }
 
 /// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded
@@ -97,6 +99,7 @@ impl BundleStorage {
         self.cost_model_buffered_bundles
             .push_back(BundleTransactionId {
                 container_ids: bundle.container_ids,
+                intended_slot: bundle.intended_slot,
             });
     }
 
@@ -143,6 +146,7 @@ impl BundleStorage {
             container_ids: bundle.container_ids,
             transactions: bundle_transactions,
             max_ages: bundle_max_ages,
+            intended_slot: bundle.intended_slot,
         })
     }
 
@@ -232,8 +236,10 @@ impl BundleStorage {
             return Err(BundleStorageError::DuplicateTransaction);
         }
 
-        self.unprocessed_bundles
-            .push_back(BundleTransactionId { container_ids });
+        self.unprocessed_bundles.push_back(BundleTransactionId {
+            container_ids,
+            intended_slot: working_bank.slot(),
+        });
 
         Ok(())
     }

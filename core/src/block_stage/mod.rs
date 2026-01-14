@@ -22,12 +22,15 @@ use {
                 calculate_max_age, translate_to_runtime_view,
             },
         },
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
         scheduler_synchronization,
+        tip_manager::TipManager,
     },
     agave_transaction_view::resolved_transaction_view::ResolvedTransactionView,
     crossbeam_channel::{Receiver, RecvTimeoutError},
     log::{info, warn},
     solana_gossip::cluster_info::ClusterInfo,
+    solana_keypair::Keypair,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_poh::transaction_recorder::TransactionRecorder,
     solana_runtime::{
@@ -38,7 +41,7 @@ use {
     std::{
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,
@@ -61,6 +64,9 @@ impl BlockStage {
         log_messages_bytes_limit: Option<usize>,
         exit: Arc<AtomicBool>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        tip_manager: TipManager,
+        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        keypair: Arc<Keypair>,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
@@ -75,7 +81,16 @@ impl BlockStage {
         let block_thread = Builder::new()
             .name("solBlockStgTx".to_string())
             .spawn(move || {
-                Self::process_loop(bank_forks, block_receiver, consumer, exit, cluster_info);
+                Self::process_loop(
+                    bank_forks,
+                    block_receiver,
+                    consumer,
+                    exit,
+                    cluster_info,
+                    tip_manager,
+                    block_builder_fee_info,
+                    keypair,
+                );
             })
             .unwrap();
 
@@ -86,13 +101,26 @@ impl BlockStage {
         self.block_thread.join()
     }
 
+    /// Max crank transactions (init tip distribution + change tip receiver/block builder)
+    const MAX_CRANK_TXNS: usize = 3;
+    /// Max serialized transaction size
+    const MAX_TXN_SIZE: usize = 1232;
+
+    #[allow(clippy::too_many_arguments)]
     fn process_loop(
         bank_forks: Arc<RwLock<BankForks>>,
         block_receiver: Receiver<HarmonicBlock>,
         mut consumer: BlockConsumer,
         exit: Arc<AtomicBool>,
         cluster_info: Arc<ClusterInfo>,
+        tip_manager: TipManager,
+        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        keypair: Arc<Keypair>,
     ) {
+        // Reusable buffer for crank transaction bytes
+        let mut crank_buffer = [[0u8; Self::MAX_TXN_SIZE]; Self::MAX_CRANK_TXNS];
+        let mut crank_lens = [0usize; Self::MAX_CRANK_TXNS];
+
         while !exit.load(Ordering::Relaxed) {
             match block_receiver.recv_timeout(Duration::from_millis(10)) {
                 Ok(block) => {
@@ -140,10 +168,24 @@ impl BlockStage {
 
                         // Translate packets to RuntimeTransaction<ResolvedTransactionView>
                         // using zerocopy TransactionView instead of bincode deserialization
-                        let (transactions, max_ages) = Self::translate_packets_to_transactions(
-                            &block.transactions(),
-                            &root_bank,
+                        let (mut transactions, mut max_ages) =
+                            Self::translate_packets_to_transactions(
+                                &block.transactions(),
+                                &root_bank,
+                                &working_bank,
+                            );
+
+                        // Prepend crank transactions if needed
+                        Self::maybe_prepend_crank(
                             &working_bank,
+                            &root_bank,
+                            &tip_manager,
+                            &block_builder_fee_info,
+                            &keypair,
+                            &mut crank_buffer,
+                            &mut crank_lens,
+                            &mut transactions,
+                            &mut max_ages,
                         );
 
                         // Process blocks
@@ -231,5 +273,107 @@ impl BlockStage {
         }
 
         (transactions, max_ages)
+    }
+
+    /// Generate crank transactions and prepend to block if any exist.
+    /// Uses pre-allocated buffer to avoid allocations.
+    #[allow(clippy::too_many_arguments)]
+    fn maybe_prepend_crank<'a>(
+        working_bank: &Bank,
+        root_bank: &Bank,
+        tip_manager: &TipManager,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        keypair: &Keypair,
+        crank_buffer: &'a mut [[u8; Self::MAX_TXN_SIZE]; Self::MAX_CRANK_TXNS],
+        crank_lens: &mut [usize; Self::MAX_CRANK_TXNS],
+        transactions: &mut Vec<RuntimeTransaction<ResolvedTransactionView<&'a [u8]>>>,
+        max_ages: &mut Vec<MaxAge>,
+    ) {
+        use solana_runtime_transaction::transaction_with_meta::TransactionWithMeta;
+
+        // Generate crank transactions
+        let fee_info = block_builder_fee_info.lock().unwrap();
+        let crank_txns =
+            match tip_manager.get_tip_programs_crank_bundle(working_bank, keypair, &fee_info) {
+                Ok(txns) => txns,
+                Err(e) => {
+                    warn!("Failed to generate crank transactions: {:?}", e);
+                    return;
+                }
+            };
+        drop(fee_info);
+
+        if crank_txns.is_empty() {
+            return;
+        }
+
+        // Serialize directly into pre-allocated buffer
+        let mut crank_count = 0usize;
+        for (i, tx) in crank_txns.iter().take(Self::MAX_CRANK_TXNS).enumerate() {
+            let mut cursor = std::io::Cursor::new(&mut crank_buffer[i][..]);
+            if bincode::serialize_into(&mut cursor, &tx.to_versioned_transaction()).is_ok() {
+                crank_lens[i] = cursor.position() as usize;
+                crank_count += 1;
+            }
+        }
+
+        // Done if there are no cranks to prepend
+        if crank_count == 0 {
+            return;
+        }
+
+        // Convert to views using stack-allocated array
+        let enable_static_instruction_limit = root_bank
+            .feature_set
+            .is_active(&agave_feature_set::static_instruction_limit::ID);
+        let transaction_account_lock_limit = working_bank.get_transaction_account_lock_limit();
+
+        let mut crank_views: [Option<RuntimeTransaction<ResolvedTransactionView<&[u8]>>>;
+            Self::MAX_CRANK_TXNS] = [const { None }; Self::MAX_CRANK_TXNS];
+        let mut view_count = 0usize;
+
+        for i in 0..crank_count {
+            let data = &crank_buffer[i][..crank_lens[i]];
+            if let Ok((view, _)) = translate_to_runtime_view(
+                data,
+                working_bank,
+                root_bank,
+                enable_static_instruction_limit,
+                transaction_account_lock_limit,
+            ) {
+                crank_views[view_count] = Some(view);
+                view_count += 1;
+            }
+        }
+
+        // Done if no views were created.
+        // Technically this should not happen because the crank txns are all valid...
+        if view_count == 0 {
+            log::warn!("no views were created from crank transactions");
+            return;
+        }
+
+        info!(
+            "Prepending {} crank transactions to block for slot {}",
+            view_count,
+            working_bank.slot()
+        );
+
+        // Reserve space and shift existing transactions to make room at front
+        let crank_max_age = MaxAge {
+            sanitized_epoch: working_bank.epoch(),
+            alt_invalidation_slot: working_bank.slot(),
+        };
+
+        transactions.reserve(view_count);
+        max_ages.reserve(view_count);
+
+        // Insert crank transactions at the front (in reverse order to maintain order)
+        for i in (0..view_count).rev() {
+            if let Some(view) = crank_views[i].take() {
+                transactions.insert(0, view);
+                max_ages.insert(0, crank_max_age);
+            }
+        }
     }
 }
