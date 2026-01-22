@@ -479,7 +479,6 @@ impl Tpu {
             &prioritization_fee_cache,
             tip_manager,
             block_builder_fee_info,
-            cluster_info.keypair().clone(),
         );
 
         let (entry_receiver, tpu_entry_notifier) =

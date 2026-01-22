@@ -9,6 +9,7 @@ mod timer;
 pub use block_consumer::BlockConsumer;
 pub use devin_scheduler::DevinScheduler;
 pub use harmonic_block::HarmonicBlock;
+use solana_signer::Signer;
 pub use timer::Timer;
 
 use crate::banking_stage::decision_maker::{BufferedPacketsDecision, DecisionMaker};
@@ -66,7 +67,6 @@ impl BlockStage {
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
         tip_manager: TipManager,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
-        keypair: Arc<Keypair>,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
@@ -89,7 +89,6 @@ impl BlockStage {
                     cluster_info,
                     tip_manager,
                     block_builder_fee_info,
-                    keypair,
                 );
             })
             .unwrap();
@@ -115,7 +114,6 @@ impl BlockStage {
         cluster_info: Arc<ClusterInfo>,
         tip_manager: TipManager,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
-        keypair: Arc<Keypair>,
     ) {
         // Reusable buffer for crank transaction bytes
         let mut crank_buffer = [[0u8; Self::MAX_TXN_SIZE]; Self::MAX_CRANK_TXNS];
@@ -145,7 +143,8 @@ impl BlockStage {
                     }
 
                     // Sanity check we are leader
-                    if !cluster_info.id().eq(working_bank.collector_id()) {
+                    let keypair = cluster_info.keypair();
+                    if !keypair.pubkey().eq(working_bank.collector_id()) {
                         warn!("received block for which we are not leader");
                         continue;
                     }
@@ -304,6 +303,20 @@ impl BlockStage {
         drop(fee_info);
 
         if crank_txns.is_empty() {
+            return;
+        }
+
+        // Check if payer has enough money for these
+        let lamports_per_signature = working_bank.get_lamports_per_signature();
+        let crank_signature_fee = (crank_txns.len() as u64) * lamports_per_signature;
+        let rent_exempt_amount = working_bank.get_minimum_balance_for_rent_exemption(
+            // recall that fee payers cannot carry data
+            0,
+        );
+        let min_requred_balance = rent_exempt_amount + crank_signature_fee;
+        let payer_balance = working_bank.get_balance(&keypair.pubkey());
+        if payer_balance < min_requred_balance {
+            warn!("payer does not have enough SOL to pay for crank transactions; balance {}; required {}", payer_balance, min_requred_balance);
             return;
         }
 
