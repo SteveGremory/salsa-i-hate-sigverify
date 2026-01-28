@@ -290,13 +290,13 @@ impl RecordReceiver {
     }
 }
 
-/// Encoded u64 where the upper 54 bits are the bank_id and the lower 10 bits are
+/// Encoded u64 where the upper 47 bits are the bank_id and the lower 17 bits are
 /// the number of allowed insertions at the current time.
 /// The number of allowed insertions is based on the number of **batches** sent,
 /// not the number of [`Record`]. This is because each batch is a separate hash
 /// in the PoH stream, and we must guarantee enough space for each hash, if we
 /// allow a [`Record`] to be sent.
-/// The allowed insertions uses 10 bits allowing up to 1023 insertions at a
+/// The allowed insertions uses 17 bits allowing up to 131071 insertions at a
 /// given time. This is for messages that have been sent but not yet processed
 /// by the receiver.
 /// The `allowed_insertions` is a budget and is decremented when something is
@@ -308,7 +308,7 @@ struct BankIdAllowedInsertions(Arc<AtomicU64>);
 impl BankIdAllowedInsertions {
     const NUM_BITS: u64 = 64;
     /// Number of bits used to track allowed insertions.
-    const ALLOWED_INSERTIONS_BITS: u64 = 10;
+    const ALLOWED_INSERTIONS_BITS: u64 = 17;
     const BANK_ID_BITS: u64 = Self::NUM_BITS - Self::ALLOWED_INSERTIONS_BITS;
 
     const DISABLED_BANK_ID: BankId = (1 << Self::BANK_ID_BITS) - 1;
@@ -383,14 +383,19 @@ mod tests {
         // Record for bank_id 1 with 1 batch succeeds.
         assert!(matches!(sender.try_send(test_record(1, 1)), Ok(None)));
 
-        // Record for bank_id 1 with 1023 batches fails (channel full).
+        let capacity = BankIdAllowedInsertions::MAX_ALLOWED_INSERTIONS as usize;
+
+        // Record for bank_id 1 with capacity batches fails (channel full).
         assert!(matches!(
-            sender.try_send(test_record(1, 1023)),
+            sender.try_send(test_record(1, capacity)),
             Err(RecordSenderError::Full)
         ));
 
-        // Record for bank_id 1 with 1022 batches succeeds (channel now full).
-        assert!(matches!(sender.try_send(test_record(1, 1022)), Ok(None)));
+        // Record for bank_id 1 with capacity - 1 batches succeeds (channel now full).
+        assert!(matches!(
+            sender.try_send(test_record(1, capacity - 1)),
+            Ok(None)
+        ));
 
         // Record for bank_id 1 with 1 batch fails (channel full).
         assert!(matches!(
