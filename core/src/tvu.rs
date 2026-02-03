@@ -176,7 +176,7 @@ impl Tvu {
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
         shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
-        leader_window_sender: tokio::sync::mpsc::Sender<(std::time::SystemTime, u64)>,
+        leader_window_sender: tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
     ) -> Result<Self, String> {
         let in_wen_restart = wen_restart_repair_slots.is_some();
 

@@ -17,6 +17,7 @@ use {
 };
 
 /// Interceptor responsible for adding the access token to request headers.
+#[derive(Clone)]
 pub(crate) struct AuthInterceptor {
     /// The token added to each request header.
     access_token: Arc<Mutex<Token>>,

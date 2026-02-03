@@ -1621,7 +1621,8 @@ impl Validator {
         };
 
         // Channel for leader window notifications from replay_stage to block_engine_stage
-        let (leader_window_sender, leader_window_receiver) = tokio::sync::mpsc::channel(128);
+        // Using broadcast so each connection can subscribe() to get its own receiver
+        let (leader_window_sender, _) = tokio::sync::broadcast::channel(128);
 
         let tvu = Tvu::new(
             vote_account,
@@ -1687,7 +1688,7 @@ impl Validator {
             slot_status_notifier,
             vote_connection_cache,
             config.shred_retransmit_receiver_address.clone(),
-            leader_window_sender,
+            leader_window_sender.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1784,7 +1785,7 @@ impl Validator {
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
-            leader_window_receiver,
+            leader_window_sender,
         );
 
         datapoint_info!(

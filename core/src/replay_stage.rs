@@ -308,7 +308,7 @@ pub struct ReplaySenders {
     pub drop_bank_sender: Sender<Vec<BankWithScheduler>>,
     pub block_metadata_notifier: Option<BlockMetadataNotifierArc>,
     pub dumped_slots_sender: Sender<Vec<(u64, Hash)>>,
-    pub leader_window_sender: tokio::sync::mpsc::Sender<(std::time::SystemTime, u64)>,
+    pub leader_window_sender: tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
 }
 
 pub struct ReplayReceivers {
@@ -2150,7 +2150,7 @@ impl ReplayStage {
         has_new_vote_been_rooted: bool,
         first_alpenglow_slot: &Option<Slot>,
         is_alpenglow_migration_complete: &mut bool,
-        leader_window_sender: &tokio::sync::mpsc::Sender<(std::time::SystemTime, u64)>,
+        leader_window_sender: &tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
     ) -> Option<Slot> {
         // all the individual calls to poh_recorder.read() are designed to
         // increase granularity, decrease contention
@@ -2313,11 +2313,11 @@ impl ReplayStage {
             } else {
                 SystemTime::now()
             };
-            match leader_window_sender.try_send((window_start_time, poh_slot)) {
-                Ok(()) => {
+            match leader_window_sender.send((window_start_time, poh_slot)) {
+                Ok(_) => {
+                    let ts_ms = window_start_time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
                     info!(
-                        "Sent leader window notification ({:?}, {})",
-                        window_start_time, poh_slot
+                        "Sent leader window notification (ts={ts_ms}ms, slot={poh_slot})",
                     );
                 }
                 Err(e) => {
@@ -8836,7 +8836,7 @@ pub(crate) mod tests {
 
         let rpc_subscriptions = Some(rpc_subscriptions);
 
-        let (leader_window_sender, _) = tokio::sync::mpsc::channel(1);
+        let (leader_window_sender, _) = tokio::sync::broadcast::channel(1);
         assert!(ReplayStage::maybe_start_leader(
             my_pubkey,
             bank_forks,
@@ -9516,7 +9516,7 @@ pub(crate) mod tests {
             poh_recorder.read().unwrap().reached_leader_slot(&my_pubkey),
             PohLeaderStatus::NotReached
         );
-        let (leader_window_sender, _) = tokio::sync::mpsc::channel(1);
+        let (leader_window_sender, _) = tokio::sync::broadcast::channel(1);
         assert!(ReplayStage::maybe_start_leader(
             &my_pubkey,
             &bank_forks,
@@ -9871,7 +9871,7 @@ pub(crate) mod tests {
         let has_new_vote_been_rooted = true;
 
         // We should start leader for the poh slot, however alpenglow migration should not be started
-        let (leader_window_sender, _) = tokio::sync::mpsc::channel(1);
+        let (leader_window_sender, _) = tokio::sync::broadcast::channel(1);
         assert!(ReplayStage::maybe_start_leader(
             &my_pubkey,
             &bank_forks,
