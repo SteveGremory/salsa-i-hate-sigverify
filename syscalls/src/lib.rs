@@ -1570,20 +1570,21 @@ declare_builtin_function!(
         use solana_bn254::versioned::{
             alt_bn128_versioned_g1_addition, alt_bn128_versioned_g1_multiplication,
             alt_bn128_versioned_pairing, Endianness, VersionedG1Addition,
-            VersionedG1Multiplication, VersionedPairing, ALT_BN128_G1_ADD_BE,
-            ALT_BN128_G1_MUL_BE, ALT_BN128_G1_POINT_SIZE, ALT_BN128_PAIRING_BE,
-            ALT_BN128_PAIRING_ELEMENT_SIZE, ALT_BN128_PAIRING_OUTPUT_SIZE,
+            VersionedG1Multiplication, VersionedPairing, ALT_BN128_ADDITION_OUTPUT_SIZE,
+            ALT_BN128_G1_ADD_BE, ALT_BN128_G1_MUL_BE, ALT_BN128_MULTIPLICATION_OUTPUT_SIZE,
+            ALT_BN128_PAIRING_BE, ALT_BN128_PAIRING_ELEMENT_SIZE,
+            ALT_BN128_PAIRING_OUTPUT_SIZE,
         };
 
         let execution_cost = invoke_context.get_execution_cost();
         let (cost, output): (u64, usize) = match group_op {
             ALT_BN128_G1_ADD_BE => (
                 execution_cost.alt_bn128_addition_cost,
-                ALT_BN128_G1_POINT_SIZE,
+                ALT_BN128_ADDITION_OUTPUT_SIZE,
             ),
             ALT_BN128_G1_MUL_BE => (
                 execution_cost.alt_bn128_multiplication_cost,
-                ALT_BN128_G1_POINT_SIZE,
+                ALT_BN128_MULTIPLICATION_OUTPUT_SIZE,
             ),
             ALT_BN128_PAIRING_BE => {
                 let ele_len = input_size
@@ -1834,10 +1835,9 @@ declare_builtin_function!(
         use solana_bn254::{
             prelude::{ALT_BN128_G1_POINT_SIZE, ALT_BN128_G2_POINT_SIZE},
             compression::prelude::{
-                alt_bn128_g1_compress_be, alt_bn128_g1_decompress_be, alt_bn128_g2_compress_be,
-                alt_bn128_g2_decompress_be, ALT_BN128_G1_COMPRESS_BE,
-                ALT_BN128_G1_DECOMPRESS_BE, ALT_BN128_G2_COMPRESS_BE,
-                ALT_BN128_G2_DECOMPRESS_BE, ALT_BN128_G1_COMPRESSED_POINT_SIZE,
+                alt_bn128_g1_compress, alt_bn128_g1_decompress, alt_bn128_g2_compress,
+                alt_bn128_g2_decompress, ALT_BN128_G1_COMPRESS_BE, ALT_BN128_G1_DECOMPRESS_BE,
+                ALT_BN128_G2_COMPRESS_BE, ALT_BN128_G2_DECOMPRESS_BE, ALT_BN128_G1_COMPRESSED_POINT_SIZE,
                 ALT_BN128_G2_COMPRESSED_POINT_SIZE,
             }
         };
@@ -1879,25 +1879,25 @@ declare_builtin_function!(
 
         match op {
             ALT_BN128_G1_COMPRESS_BE => {
-                let Ok(result_point) = alt_bn128_g1_compress_be(input) else {
+                let Ok(result_point) = alt_bn128_g1_compress(input) else {
                     return Ok(1);
                 };
                 call_result.copy_from_slice(&result_point);
             }
             ALT_BN128_G1_DECOMPRESS_BE => {
-                let Ok(result_point) = alt_bn128_g1_decompress_be(input) else {
+                let Ok(result_point) = alt_bn128_g1_decompress(input) else {
                     return Ok(1);
                 };
                 call_result.copy_from_slice(&result_point);
             }
             ALT_BN128_G2_COMPRESS_BE => {
-                let Ok(result_point) = alt_bn128_g2_compress_be(input) else {
+                let Ok(result_point) = alt_bn128_g2_compress(input) else {
                     return Ok(1);
                 };
                 call_result.copy_from_slice(&result_point);
             }
             ALT_BN128_G2_DECOMPRESS_BE => {
-                let Ok(result_point) = alt_bn128_g2_decompress_be(input) else {
+                let Ok(result_point) = alt_bn128_g2_decompress(input) else {
                     return Ok(1);
                 };
                 call_result.copy_from_slice(&result_point);
