@@ -33,7 +33,7 @@ use {
         num::NonZeroUsize,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc, RwLock,
+            Arc, OnceLock, RwLock,
         },
         thread::{Builder, JoinHandle},
         time::{Duration, Instant},
@@ -58,6 +58,7 @@ const CLUSTER_NODES_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Maximum number of packet batches to process in a single sigverify iteration.
 const SIGVERIFY_SHRED_BATCH_SIZE: usize = 1024;
+const DISABLE_SHRED_SIGVERIFY_ENV: &str = "AGAVE_DISABLE_SHRED_SIGVERIFY";
 
 #[allow(clippy::enum_variant_names)]
 enum ShredSigverifyError {
@@ -83,6 +84,13 @@ pub fn spawn_shred_sigverify(
     verified_sender: Sender<Vec<(shred::Payload, /*is_repaired:*/ bool)>>,
     num_sigverify_threads: NonZeroUsize,
 ) -> JoinHandle<()> {
+    if is_shred_sigverify_disabled() {
+        warn!(
+            "{} is enabled; skipping TVU shred signature verification",
+            DISABLE_SHRED_SIGVERIFY_ENV
+        );
+    }
+
     let recycler_cache = RecyclerCache::warmed();
     let mut stats = ShredSigVerifyStats::new(Instant::now());
     let cache = RwLock::new(LruCache::new(SIGVERIFY_LRU_CACHE_CAPACITY));
@@ -399,6 +407,10 @@ fn verify_packets(
     packets: &mut [PacketBatch],
     cache: &RwLock<LruCache>,
 ) {
+    if is_shred_sigverify_disabled() {
+        return;
+    }
+
     let leader_slots: SlotPubkeys =
         get_slot_leaders(self_pubkey, packets, leader_schedule_cache, working_bank)
             .filter_map(|(slot, pubkey)| Some((slot, pubkey?)))
@@ -406,6 +418,16 @@ fn verify_packets(
             .collect();
     let out = verify_shreds_gpu(thread_pool, packets, &leader_slots, recycler_cache, cache);
     solana_perf::sigverify::mark_disabled(packets, &out);
+}
+
+fn is_shred_sigverify_disabled() -> bool {
+    static DISABLED: OnceLock<bool> = OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var(DISABLE_SHRED_SIGVERIFY_ENV)
+            .ok()
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"))
+            .unwrap_or(false)
+    })
 }
 
 // Returns pubkey of leaders for shred slots referenced in the packets.

@@ -24,7 +24,6 @@ use {
         block_engine::{
             self, block_engine_validator_client::BlockEngineValidatorClient,
             BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
-            SubmitLeaderWindowInfoRequest,
         },
     },
     solana_gossip::cluster_info::ClusterInfo,
@@ -744,8 +743,8 @@ impl BlockEngineStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
-        block_tx: &Sender<HarmonicBlock>,
-        leader_window_sender: &tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
+        _block_tx: &Sender<HarmonicBlock>,
+        _leader_window_sender: &tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
@@ -756,22 +755,12 @@ impl BlockEngineStage {
         .map_err(|e| ProxyError::MethodError(e.to_string()))?
         .into_inner();
 
-        // Harmonic TODO: revert to subscribe_bundles once 3.0 clients are deprecated
         let subscribe_bundles_stream = timeout(
             *connection_timeout,
-            client.subscribe_bundles2(block_engine::SubscribeBundlesRequest {}),
+            client.subscribe_bundles(block_engine::SubscribeBundlesRequest {}),
         )
         .await
-        .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles2".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?
-        .into_inner();
-
-        let subscribe_blocks_stream = timeout(
-            *connection_timeout,
-            client.subscribe_blocks(block_engine::SubscribeBundlesRequest {}),
-        )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("subscribe_blocks".to_string()))?
+        .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))?
         .map_err(|e| ProxyError::MethodError(e.to_string()))?
         .into_inner();
 
@@ -799,11 +788,7 @@ impl BlockEngineStage {
 
         Self::consume_bundle_and_packet_stream(
             client,
-            (
-                subscribe_bundles_stream,
-                subscribe_packets_stream,
-                subscribe_blocks_stream,
-            ),
+            (subscribe_bundles_stream, subscribe_packets_stream),
             bundle_tx.clone(),
             packet_tx.clone(),
             local_config.clone(),
@@ -818,8 +803,6 @@ impl BlockEngineStage {
             cluster_info.clone(),
             *connection_timeout,
             block_engine_url.to_string(),
-            block_tx.clone(),
-            leader_window_sender.clone(),
         )
         .await
     }
@@ -827,10 +810,9 @@ impl BlockEngineStage {
     #[allow(clippy::too_many_arguments)]
     async fn consume_bundle_and_packet_stream(
         client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
-        (bundle_stream, packet_stream, block_stream): (
+        (bundle_stream, packet_stream): (
             Streaming<block_engine::SubscribeBundlesResponse>,
             Streaming<block_engine::SubscribePacketsResponse>,
-            Streaming<block_engine::SubscribeBundlesResponse>,
         ),
         bundle_tx: Sender<Vec<PacketBundle>>,
         packet_tx: Sender<PacketBatch>,
@@ -846,8 +828,6 @@ impl BlockEngineStage {
         cluster_info: Arc<ClusterInfo>,
         connection_timeout: Duration,
         block_engine_url: String,
-        block_tx: Sender<HarmonicBlock>,
-        leader_window_sender: tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -861,23 +841,8 @@ impl BlockEngineStage {
 
         info!("connected to packet and bundle stream");
 
-        // Subscribe to get a fresh receiver for this connection
-        let leader_window_receiver = leader_window_sender.subscribe();
-
         // Spawn dedicated tasks for each stream
         let mut tasks: JoinSet<crate::proxy::Result<()>> = JoinSet::new();
-
-        tasks.spawn(Self::run_leader_window_task(
-            leader_window_receiver,
-            client.clone(),
-            exit.clone(),
-        ));
-        tasks.spawn(Self::run_block_task(
-            block_stream,
-            block_tx,
-            stats.clone(),
-            exit.clone(),
-        ));
         tasks.spawn(Self::run_packet_task(
             packet_stream,
             packet_tx,
@@ -989,55 +954,6 @@ impl BlockEngineStage {
         }
     }
 
-    /// Dedicated task for leader window notifications
-    async fn run_leader_window_task(
-        mut receiver: tokio::sync::broadcast::Receiver<(std::time::SystemTime, u64)>,
-        mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
-        exit: Arc<AtomicBool>,
-    ) -> crate::proxy::Result<()> {
-        while !exit.load(Ordering::Relaxed) {
-            match receiver.recv().await {
-                Ok((time, slot)) => {
-                    let ts_ms = time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-                    info!("Handling leader window notification (ts={ts_ms}ms, slot={slot})");
-                    match client
-                        .submit_leader_window_info(SubmitLeaderWindowInfoRequest {
-                            start_timestamp: Some(prost_types::Timestamp::from(time)),
-                            slot,
-                        })
-                        .await
-                    {
-                        Ok(_) => info!("Successfully submitted leader window info for slot {}", slot),
-                        Err(e) => error!("Failed to submit leader window info: {e}"),
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return Err(ProxyError::GrpcStreamDisconnected);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("Leader window receiver lagged by {} messages", n);
-                    // Continue - lagged messages are stale anyway
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Dedicated task for block stream
-    async fn run_block_task(
-        mut stream: Streaming<block_engine::SubscribeBundlesResponse>,
-        block_tx: Sender<HarmonicBlock>,
-        stats: Arc<BlockEngineStageStats>,
-        exit: Arc<AtomicBool>,
-    ) -> crate::proxy::Result<()> {
-        while !exit.load(Ordering::Relaxed) {
-            let msg = stream.message().await?
-                .ok_or(ProxyError::GrpcStreamDisconnected)?;
-            Self::handle_block_engine_maybe_blocks_inner(msg, &block_tx, &stats)?;
-        }
-        Ok(())
-    }
-
     /// Dedicated task for packet stream
     async fn run_packet_task(
         mut stream: Streaming<block_engine::SubscribePacketsResponse>,
@@ -1106,39 +1022,6 @@ impl BlockEngineStage {
         bundle_sender
             .send(bundles)
             .map_err(|_| ProxyError::PacketForwardError)
-    }
-
-    fn handle_block_engine_maybe_blocks_inner(
-        blocks_response: block_engine::SubscribeBundlesResponse,
-        block_sender: &Sender<crate::block_stage::HarmonicBlock>,
-        block_engine_stats: &BlockEngineStageStats,
-    ) -> crate::proxy::Result<()> {
-        for bundle in blocks_response.bundles {
-            let intended_slot = bundle.uuid.parse::<u64>().map_err(|e| {
-                ProxyError::MethodError(format!("failed to parse block uuid as slot: {e}"))
-            })?;
-
-            if let Some(bundle_data) = bundle.bundle {
-                info!("Received block from auction");
-                let packet_batch = PacketBatch::from(
-                    bundle_data
-                        .packets
-                        .into_iter()
-                        .map(proto_packet_to_packet)
-                        .collect::<Vec<BytesPacket>>(),
-                );
-
-                let block_bundle =
-                    crate::block_stage::HarmonicBlock::new(packet_batch, intended_slot);
-
-                block_sender
-                    .send(block_bundle)
-                    .map_err(|_| ProxyError::PacketForwardError)?;
-
-                block_engine_stats.num_blocks.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        Ok(())
     }
 
     fn handle_block_engine_packets(

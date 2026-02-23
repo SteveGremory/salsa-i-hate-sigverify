@@ -1,0 +1,21 @@
+[Unit]
+Description=Yellowstone Jet Forwarder
+After=network-online.target agave-rpc.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sol
+Group=sol
+WorkingDirectory=/home/sol/salsa-i-hate-sigverify
+EnvironmentFile=-/etc/default/yellowstone-jet
+ExecStart=/home/sol/salsa-i-hate-sigverify/scripts/jet.sh
+Restart=always
+RestartSec=5
+LimitNOFILE=700000
+LimitNPROC=700000
+TimeoutStopSec=120
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

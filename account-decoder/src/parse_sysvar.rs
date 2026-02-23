@@ -167,6 +167,7 @@ pub struct UiRent {
 }
 
 impl From<Rent> for UiRent {
+    #[allow(deprecated)]
     fn from(rent: Rent) -> Self {
         Self {
             lamports_per_byte_year: rent.lamports_per_byte_year.to_string(),
@@ -321,6 +322,7 @@ mod test {
             );
         }
 
+        #[allow(deprecated)]
         let rent = Rent {
             lamports_per_byte_year: 10,
             exemption_threshold: 2.0,

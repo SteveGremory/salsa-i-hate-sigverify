@@ -1,0 +1,44 @@
+tracing:
+  json: false
+
+identity:
+  expected: null
+  keypair: /home/sol/validator-keypair.json
+
+upstream:
+  grpc:
+    endpoint: http://127.0.0.1:10000
+    x_token: null
+  rpc: http://127.0.0.1:8899
+  cluster_nodes_update_interval: 30s
+  stake_update_interval: 30s
+
+listen_admin:
+  bind:
+    - 127.0.0.1:8011
+
+listen_solana_like:
+  bind:
+    - 127.0.0.1:8010
+
+send_transaction_service:
+  leader_forward_count: 2
+  relay_only_mode: true
+  default_max_retries: 0
+  service_max_retries: 0
+  retry_rate: 1s
+
+quic:
+  max_concurrent_connection: 256
+  endpoint_count: 256
+  send_retry_count: 1
+  connection_prediction_lookahead: 10
+  tpu_port: forwards
+  connection_handshake_timeout: 4s
+  endpoint_port_range:
+    start: 35000
+    end: 35511
+
+features:
+  enabled_features:
+    - transaction_payload_v2

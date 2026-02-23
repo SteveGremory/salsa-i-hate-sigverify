@@ -10,6 +10,7 @@ fn main() -> Result<(), std::io::Error> {
     let proto_base_path = std::path::PathBuf::from("protos");
     let proto_files = [
         "auth.proto",
+        "block.proto",
         "block_engine.proto",
         "bundle.proto",
         "packet.proto",
