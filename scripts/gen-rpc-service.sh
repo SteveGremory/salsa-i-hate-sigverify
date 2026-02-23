@@ -27,6 +27,7 @@ User=$service_user
 Group=$service_group
 WorkingDirectory=$repo_root
 EnvironmentFile=-$env_file
+Environment=AGAVE_DISABLE_SHRED_SIGVERIFY=1
 ExecStart=$repo_root/scripts/rpc.sh
 Restart=always
 RestartSec=5

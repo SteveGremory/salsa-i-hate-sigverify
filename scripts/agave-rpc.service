@@ -10,6 +10,7 @@ User=sol
 Group=sol
 WorkingDirectory=/home/sol/salsa-i-hate-sigverify
 EnvironmentFile=-/etc/default/agave-rpc
+Environment=AGAVE_DISABLE_SHRED_SIGVERIFY=1
 ExecStart=/home/sol/salsa-i-hate-sigverify/scripts/rpc.sh
 Restart=always
 RestartSec=5
