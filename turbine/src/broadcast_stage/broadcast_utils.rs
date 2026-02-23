@@ -89,7 +89,6 @@ pub(super) fn recv_slot_entries(
             bank = try_bank.clone();
             coalesce_start = Instant::now();
         }
-        last_tick_height = tick_height;
 
         let entry_bytes = serialized_size(&entry)?;
         if serialized_batch_byte_count + entry_bytes > max_batch_byte_count {
@@ -99,6 +98,10 @@ pub(super) fn recv_slot_entries(
             process_stats.coalesce_exited_hit_max += 1;
             break;
         }
+
+        // only update the last tick height after confirming we did
+        // not carry over the entry to the next batch.
+        last_tick_height = tick_height;
 
         // Add the entry to the batch.
         serialized_batch_byte_count += entry_bytes;
