@@ -7,13 +7,13 @@
     "worker_threads": 8
   },
   "grpc": {
-    "address": "0.0.0.0:10000",
+    "address": "127.0.0.1:10000",
     "tls_config": null,
     "compression": {
       "accept": [],
       "send": []
     },
-    "max_decoding_message_size": "4_194_304",
+    "max_decoding_message_size": "268_435_456",
     "snapshot_plugin_channel_capacity": null,
     "snapshot_client_channel_capacity": "50_000_000",
     "channel_capacity": "100_000",
@@ -28,9 +28,9 @@
       "accounts": {
         "max": 1000000,
         "any": false,
-        "account_max": 10,
+        "account_max": 1000000,
         "account_reject": [],
-        "owner_max": 10,
+        "owner_max": 1000000,
         "owner_reject": [],
         "data_slice_max": 4
       },

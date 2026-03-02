@@ -142,11 +142,7 @@ impl XdpRetransmitter {
             NetworkDevice::new_from_default_route().unwrap()
         });
 
-        let ebpf = if config.zero_copy {
-            Some(load_xdp_program(&dev).map_err(|e| format!("failed to attach xdp program: {e}"))?)
-        } else {
-            None
-        };
+        let ebpf = Some(load_xdp_program(&dev).map_err(|e| format!("failed to attach xdp program: {e}"))?);
 
         for cap in [CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF, CAP_PERFMON] {
             caps::drop(None, CapSet::Effective, cap).unwrap();

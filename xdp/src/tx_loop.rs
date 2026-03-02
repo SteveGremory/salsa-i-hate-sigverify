@@ -15,7 +15,7 @@ use {
     },
     caps::{
         CapSet,
-        Capability::{CAP_NET_ADMIN, CAP_NET_RAW},
+        Capability::{CAP_BPF, CAP_NET_ADMIN, CAP_NET_RAW},
     },
     crossbeam_channel::{Receiver, Sender, TryRecvError},
     libc::{sysconf, _SC_PAGESIZE},
@@ -89,14 +89,13 @@ pub fn tx_loop<T: AsRef<[u8]>, A: AsRef<[SocketAddr]>>(
             .unwrap();
     let umem = SliceUmem::new(&mut memory, frame_size as u32).unwrap();
 
-    // we need NET_ADMIN and NET_RAW for the socket
-    for cap in [CAP_NET_ADMIN, CAP_NET_RAW] {
+    // we need NET_ADMIN, NET_RAW and BPF for the socket
+    for cap in [CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF] {
         caps::raise(None, CapSet::Effective, cap).unwrap();
     }
 
-    let Ok((mut socket, tx)) = Socket::tx(queue, umem, zero_copy, tx_size * 2, tx_size) else {
-        panic!("failed to create AF_XDP socket on queue {queue_id:?}");
-    };
+    let (mut socket, tx) = Socket::tx(queue, umem, zero_copy, tx_size * 2, tx_size)
+        .unwrap_or_else(|e| panic!("failed to create AF_XDP socket on queue {queue_id:?}: {e}"));
 
     let umem = socket.umem();
     let umem_tx_capacity = umem.available();
@@ -112,7 +111,7 @@ pub fn tx_loop<T: AsRef<[u8]>, A: AsRef<[SocketAddr]>>(
     let router = Router::new().expect("failed to create router");
 
     // we don't need higher caps anymore
-    for cap in [CAP_NET_ADMIN, CAP_NET_RAW] {
+    for cap in [CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF] {
         caps::drop(None, CapSet::Effective, cap).unwrap();
     }
 
